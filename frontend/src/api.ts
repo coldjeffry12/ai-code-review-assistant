@@ -13,6 +13,9 @@ export type ReviewResponse = {
   test_cases: string[]
   fixed_code?: string | null
   used_ai: boolean
+  review_source: string
+  cache_hit: boolean
+  similarity_used?: number | null
 }
 
 export type ReviewRequest = {

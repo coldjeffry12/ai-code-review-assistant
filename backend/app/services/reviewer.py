@@ -1,12 +1,30 @@
 import asyncio
+import difflib
+import hashlib
 import json
 import os
 import re
+import time
 from typing import Any, Dict
 
 from openai import OpenAI
 
 from app.schemas import ReviewRequest, ReviewResponse, BugFinding
+
+
+_REVIEW_CACHE: dict[str, dict[str, Any]] = {}
+
+
+def _cache_limit() -> int:
+    return _int_env("REVIEW_CACHE_MAX_ENTRIES", 50, 1, 500)
+
+
+def _similarity_threshold() -> float:
+    try:
+        value = float(os.getenv("REVIEW_SIMILARITY_THRESHOLD", "0.9"))
+    except ValueError:
+        value = 0.9
+    return max(0.5, min(value, 0.99))
 
 
 def _safe_json_loads(text: str) -> Dict[str, Any]:
@@ -80,6 +98,124 @@ def _int_env(name: str, default: int, min_value: int, max_value: int) -> int:
     except ValueError:
         value = default
     return max(min_value, min(value, max_value))
+
+
+def _cache_key(payload: ReviewRequest) -> str:
+    fingerprint = "|".join(
+        [
+            payload.language.strip().lower(),
+            payload.focus.strip().lower(),
+            hashlib.sha256(payload.code.encode("utf-8")).hexdigest(),
+        ]
+    )
+    return hashlib.sha256(fingerprint.encode("utf-8")).hexdigest()
+
+
+def _normalize_code_for_similarity(code: str) -> str:
+    return re.sub(r"\s+", " ", code.strip())
+
+
+def _clone_response(response: ReviewResponse) -> ReviewResponse:
+    return response.model_copy(deep=True)
+
+
+def _cached_response(payload: ReviewRequest) -> ReviewResponse | None:
+    entry = _REVIEW_CACHE.get(_cache_key(payload))
+    if not entry:
+        return None
+
+    cached_review = _clone_response(entry["response"])
+    cached_review.review_source = "cache"
+    cached_review.cache_hit = True
+    cached_review.similarity_used = 1.0
+    return cached_review
+
+
+def _find_similar_cached_review(payload: ReviewRequest) -> dict[str, Any] | None:
+    current_code = _normalize_code_for_similarity(payload.code)
+    if not current_code:
+        return None
+
+    best_entry: dict[str, Any] | None = None
+    best_score = 0.0
+    threshold = _similarity_threshold()
+    language = payload.language.strip().lower()
+    focus = payload.focus.strip().lower()
+
+    for entry in _REVIEW_CACHE.values():
+        if entry["language"] != language or entry["focus"] != focus:
+            continue
+        previous_code = _normalize_code_for_similarity(entry["code"])
+        score = difflib.SequenceMatcher(None, previous_code, current_code).ratio()
+        if score > best_score:
+            best_score = score
+            best_entry = entry
+
+    if best_entry and best_score >= threshold:
+        return {**best_entry, "similarity": round(best_score, 3)}
+
+    return None
+
+
+def _diff_summary(previous_code: str, current_code: str, max_lines: int = 24) -> str:
+    diff_lines = list(
+        difflib.unified_diff(
+            previous_code.splitlines(),
+            current_code.splitlines(),
+            fromfile="previous",
+            tofile="current",
+            lineterm="",
+            n=2,
+        )
+    )
+    if not diff_lines:
+        return "No text differences detected."
+
+    selected_lines = diff_lines[:max_lines]
+    if len(diff_lines) > max_lines:
+        selected_lines.append("... diff truncated ...")
+    return "\n".join(selected_lines)
+
+
+def _similar_review_context(entry: dict[str, Any] | None, current_code: str) -> str:
+    if not entry:
+        return ""
+
+    previous_review: ReviewResponse = entry["response"]
+    bug_titles = [f"{bug.severity}: {bug.title}" for bug in previous_review.bugs[:6]]
+    return f"""
+Previous similar review context:
+- Similarity: {entry["similarity"]:.0%}
+- Previous summary: {previous_review.summary}
+- Previous risk score: {previous_review.risk_score}/100
+- Previous findings: {", ".join(bug_titles) if bug_titles else "No concrete findings"}
+
+Changed code summary:
+{_diff_summary(entry["code"], current_code)}
+
+Use this previous review only as context. Review the full current code and return a fresh result for the current code.
+"""
+
+
+def _store_review(payload: ReviewRequest, response: ReviewResponse) -> None:
+    key = _cache_key(payload)
+    review_to_store = _clone_response(response)
+    review_to_store.cache_hit = False
+    _REVIEW_CACHE[key] = {
+        "language": payload.language.strip().lower(),
+        "focus": payload.focus.strip().lower(),
+        "code": payload.code,
+        "response": review_to_store,
+        "created_at": time.time(),
+    }
+
+    while len(_REVIEW_CACHE) > _cache_limit():
+        oldest_key = min(_REVIEW_CACHE, key=lambda cache_key: _REVIEW_CACHE[cache_key]["created_at"])
+        _REVIEW_CACHE.pop(oldest_key, None)
+
+
+def _clear_review_cache() -> None:
+    _REVIEW_CACHE.clear()
 
 
 def _bug_findings(value: Any) -> list[BugFinding]:
@@ -158,6 +294,9 @@ def _normalize_review_response(review: ReviewResponse) -> ReviewResponse:
         test_cases=_dedupe_strings(review.test_cases),
         fixed_code=review.fixed_code,
         used_ai=review.used_ai,
+        review_source=review.review_source,
+        cache_hit=review.cache_hit,
+        similarity_used=review.similarity_used,
     )
 
 
@@ -197,6 +336,7 @@ def _merge_safety_checks(ai_review: ReviewResponse, safety_review: ReviewRespons
         test_cases=test_cases,
         fixed_code=ai_review.fixed_code,
         used_ai=True,
+        review_source="ai",
     ))
 
 
@@ -383,6 +523,7 @@ def _fallback_review(payload: ReviewRequest, reason: str | None = None) -> Revie
         test_cases=test_cases,
         fixed_code=None,
         used_ai=False,
+        review_source="fallback",
     ))
 
 
@@ -399,17 +540,28 @@ def _review_from_ai_json(parsed: Dict[str, Any]) -> ReviewResponse:
         test_cases=_string_list(parsed.get("test_cases"), ["Test the main success path and important failure paths."]),
         fixed_code=fixed_code,
         used_ai=True,
+        review_source="ai",
     ))
 
 
 async def review_code(payload: ReviewRequest) -> ReviewResponse:
+    exact_cached_review = _cached_response(payload)
+    if exact_cached_review:
+        return exact_cached_review
+
+    similar_cached_review = _find_similar_cached_review(payload)
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     model = os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip()
     base_url = os.getenv("OPENAI_BASE_URL", "").strip()
     is_ollama = _is_ollama_base_url(base_url)
 
     if not api_key:
-        return _fallback_review(payload, "Fallback review completed because OPENAI_API_KEY is not configured.")
+        fallback_review = _fallback_review(payload, "Fallback review completed because OPENAI_API_KEY is not configured.")
+        if similar_cached_review:
+            fallback_review.review_source = "fallback_with_cache_context"
+            fallback_review.similarity_used = similar_cached_review["similarity"]
+        _store_review(payload, fallback_review)
+        return fallback_review
 
     timeout = float(os.getenv("OPENAI_TIMEOUT_SECONDS", "90" if is_ollama else "30"))
     client_options: dict[str, Any] = {"api_key": api_key, "timeout": timeout}
@@ -460,6 +612,8 @@ Code:
 ```{payload.language}
 {payload.code}
 ```
+
+{_similar_review_context(similar_cached_review, payload.code)}
 """
 
     completion_options: dict[str, Any] = {
@@ -490,9 +644,19 @@ Code:
         parsed = _safe_json_loads(content)
         ai_review = _review_from_ai_json(parsed)
         safety_review = _fallback_review(payload)
-        return _merge_safety_checks(ai_review, safety_review)
+        review = _merge_safety_checks(ai_review, safety_review)
+        if similar_cached_review:
+            review.review_source = "ai_with_cache_context"
+            review.similarity_used = similar_cached_review["similarity"]
+        _store_review(payload, review)
+        return review
     except Exception:
-        return _fallback_review(
+        fallback_review = _fallback_review(
             payload,
             "AI review was unavailable or returned invalid JSON, so the backend used the fallback review engine.",
         )
+        if similar_cached_review:
+            fallback_review.review_source = "fallback_with_cache_context"
+            fallback_review.similarity_used = similar_cached_review["similarity"]
+        _store_review(payload, fallback_review)
+        return fallback_review

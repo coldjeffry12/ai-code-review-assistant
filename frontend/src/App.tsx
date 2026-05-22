@@ -32,6 +32,16 @@ function getRiskMeta(score: number) {
   return { label: 'Low risk', className: 'riskLow' }
 }
 
+function getReviewSourceLabel(result: ReviewResponse) {
+  if (result.cache_hit) {
+    return 'Cached review'
+  }
+  if (result.review_source.includes('cache_context')) {
+    return result.used_ai ? 'AI review + cache context' : 'Fallback review + cache context'
+  }
+  return result.used_ai ? 'AI review' : 'Fallback review'
+}
+
 function App() {
   const [theme, setTheme] = useState<Theme>(getInitialTheme)
   const [language, setLanguage] = useState('Python')
@@ -135,7 +145,7 @@ function App() {
         <section className="panel resultPanel">
           <div className="panelHeader">
             <h2>Review Result</h2>
-            {result && <span>{result.used_ai ? 'AI review' : 'Fallback review'}</span>}
+            {result && <span>{getReviewSourceLabel(result)}</span>}
           </div>
 
           {!result && !loading && (
@@ -146,7 +156,8 @@ function App() {
 
           {loading && (
             <div className="emptyState">
-              <p>Reviewing code...</p>
+              <p>Running review...</p>
+              <span>Free AI review can take 10-30 seconds. Repeated identical code returns from cache.</span>
             </div>
           )}
 
@@ -161,6 +172,14 @@ function App() {
               <section className="resultSection">
                 <h3>Summary</h3>
                 <p>{result.summary}</p>
+                {result.cache_hit && (
+                  <p className="resultNote">Returned instantly from cache because the language, focus, and code matched a previous review.</p>
+                )}
+                {!result.cache_hit && result.similarity_used && (
+                  <p className="resultNote">
+                    Used a previous similar review as context ({Math.round(result.similarity_used * 100)}% match), then generated a fresh result.
+                  </p>
+                )}
               </section>
 
               <section className="resultSection">

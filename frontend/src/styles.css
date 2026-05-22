@@ -292,10 +292,25 @@ button:disabled {
   min-height: 240px;
   display: grid;
   place-items: center;
+  align-content: center;
+  gap: 8px;
   color: var(--muted-strong);
   border: 1px dashed var(--input-border);
   border-radius: 8px;
   background: var(--panel-subtle);
+  text-align: center;
+  padding: 24px;
+}
+
+.emptyState p {
+  margin: 0;
+}
+
+.emptyState span {
+  max-width: 340px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.5;
 }
 
 .scoreBox {
@@ -350,6 +365,12 @@ button:disabled {
 .resultSection p {
   line-height: 1.6;
   margin: 8px 0;
+}
+
+.resultNote {
+  border-left: 3px solid var(--accent);
+  padding-left: 10px;
+  color: var(--muted);
 }
 
 .findingList {

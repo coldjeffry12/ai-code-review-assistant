@@ -27,3 +27,6 @@ class ReviewResponse(BaseModel):
     test_cases: List[str]
     fixed_code: Optional[str] = None
     used_ai: bool
+    review_source: str = "fallback"
+    cache_hit: bool = False
+    similarity_used: Optional[float] = None
