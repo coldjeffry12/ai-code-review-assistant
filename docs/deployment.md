@@ -67,6 +67,7 @@ Notes:
 - `PYTHON_VERSION` pins Render to Python 3.11.11. This avoids Python 3.14 dependency build issues with packages such as `pydantic-core`.
 - `OPENAI_API_KEY` is optional. Leave it empty if you want the backend to use fallback review mode.
 - `OPENAI_BASE_URL` is optional and only needed for a compatible non-default AI provider.
+- Do not set `OPENAI_BASE_URL=http://localhost:11434/v1` on Render. That local Ollama URL only works on your own computer.
 - `FRONTEND_ORIGINS` should be updated after the Vercel frontend URL is available.
 - Render provides `$PORT`; the backend start command must use it.
 

@@ -21,6 +21,8 @@ The backend uses an OpenAI-compatible API when `OPENAI_API_KEY` is configured. I
 
 The live demo runs in free fallback mode with no `OPENAI_API_KEY`. It uses the backend rule-based review engine to detect common issues such as division by zero, hardcoded secrets, JavaScript `var` usage, missing null checks, unsafe collection access, and SQL string concatenation risk.
 
+For free local AI review, run an open-source model with Ollama and point the backend to `http://localhost:11434/v1`. See [docs/free-local-ai.md](docs/free-local-ai.md).
+
 ## Tech Stack
 
 Frontend:
@@ -150,6 +152,16 @@ FRONTEND_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 ```
 
 Leave `OPENAI_API_KEY` empty for fallback mode. Add a key only if you want real AI reviews.
+
+Free local AI option with Ollama:
+
+```text
+OPENAI_API_KEY=ollama
+OPENAI_MODEL=qwen2.5-coder:7b
+OPENAI_BASE_URL=http://localhost:11434/v1
+```
+
+More details are in [docs/free-local-ai.md](docs/free-local-ai.md).
 
 Frontend:
 
