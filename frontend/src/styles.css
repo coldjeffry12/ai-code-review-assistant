@@ -213,6 +213,11 @@ button:disabled {
   background: #fff1f0;
 }
 
+.riskCritical {
+  background: #fee4e2;
+  border-color: #fda29b;
+}
+
 .resultSection {
   margin-top: 18px;
 }

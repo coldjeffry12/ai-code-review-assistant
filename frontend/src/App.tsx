@@ -9,10 +9,13 @@ print(divide_numbers(10, 0))`
 const languageOptions = ['Python', 'JavaScript', 'TypeScript', 'React', 'Java', 'C++', 'SQL']
 
 function getRiskMeta(score: number) {
-  if (score >= 75) {
+  if (score >= 76) {
+    return { label: 'Critical risk', className: 'riskCritical' }
+  }
+  if (score >= 51) {
     return { label: 'High risk', className: 'riskHigh' }
   }
-  if (score >= 45) {
+  if (score >= 26) {
     return { label: 'Medium risk', className: 'riskMedium' }
   }
   return { label: 'Low risk', className: 'riskLow' }
@@ -131,21 +134,25 @@ function App() {
 
               <section className="resultSection">
                 <h3>Possible Bugs</h3>
-                <div className="findingList">
-                  {result.bugs.map((bug, index) => {
-                    const severityClass = bug.severity.toLowerCase().replace(/[^a-z]/g, '')
-                    return (
-                      <article className="finding" key={`${bug.title}-${index}`}>
-                        <div className="findingHeader">
-                          <strong>{bug.title}</strong>
-                          <span className={`severity severity-${severityClass}`}>{bug.severity}</span>
-                        </div>
-                        <p>{bug.explanation}</p>
-                        <p><b>Fix:</b> {bug.suggested_fix}</p>
-                      </article>
-                    )
-                  })}
-                </div>
+                {result.bugs.length === 0 ? (
+                  <p>No concrete bug findings were returned. Review the improvement notes and test ideas below.</p>
+                ) : (
+                  <div className="findingList">
+                    {result.bugs.map((bug, index) => {
+                      const severityClass = bug.severity.toLowerCase().replace(/[^a-z]/g, '')
+                      return (
+                        <article className="finding" key={`${bug.title}-${index}`}>
+                          <div className="findingHeader">
+                            <strong>{bug.title}</strong>
+                            <span className={`severity severity-${severityClass}`}>{bug.severity}</span>
+                          </div>
+                          <p>{bug.explanation}</p>
+                          <p><b>Fix:</b> {bug.suggested_fix}</p>
+                        </article>
+                      )
+                    })}
+                  </div>
+                )}
               </section>
 
               <section className="resultSection">

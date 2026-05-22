@@ -47,10 +47,22 @@ def _coerce_risk_score(value: Any) -> int:
 def _string_list(value: Any, fallback: list[str]) -> list[str]:
     if isinstance(value, list):
         items = [str(item).strip() for item in value if str(item).strip()]
-        return items or fallback
+        return _dedupe_strings(items) or fallback
     if isinstance(value, str) and value.strip():
         return [value.strip()]
     return fallback
+
+
+def _dedupe_strings(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    unique_items: list[str] = []
+    for item in items:
+        normalized = re.sub(r"\s+", " ", item.strip()).lower()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        unique_items.append(item.strip())
+    return unique_items
 
 
 def _has_probable_division(code: str) -> bool:
@@ -85,18 +97,68 @@ def _bug_findings(value: Any) -> list[BugFinding]:
                 )
             )
 
-    return findings or [
-        BugFinding(
-            title="No specific bug reported",
-            severity="Low",
-            explanation="The AI response did not include a concrete bug finding.",
-            suggested_fix="Review edge cases manually and add tests around the most important behavior.",
-        )
-    ]
+    return findings
 
 
 def _is_placeholder_bug(bug: BugFinding) -> bool:
-    return bug.title.lower() == "no specific bug reported"
+    placeholder_titles = {
+        "no specific bug reported",
+        "no critical issue detected by fallback engine",
+    }
+    return bug.title.strip().lower() in placeholder_titles
+
+
+def _normalize_severity(severity: str) -> str:
+    normalized = severity.strip().lower()
+    if "critical" in normalized:
+        return "Critical"
+    if "high" in normalized:
+        return "High"
+    if "medium" in normalized or "moderate" in normalized:
+        return "Medium"
+    return "Low"
+
+
+def _severity_floor(bugs: list[BugFinding]) -> int:
+    severities = {_normalize_severity(bug.severity) for bug in bugs if not _is_placeholder_bug(bug)}
+    if "Critical" in severities:
+        return 70
+    if "High" in severities:
+        return 51
+    if "Medium" in severities:
+        return 30
+    return 10
+
+
+def _normalize_review_response(review: ReviewResponse) -> ReviewResponse:
+    real_bugs = [
+        BugFinding(
+            title=bug.title,
+            severity=_normalize_severity(bug.severity),
+            explanation=bug.explanation,
+            suggested_fix=bug.suggested_fix,
+        )
+        for bug in review.bugs
+        if not _is_placeholder_bug(bug)
+    ]
+
+    risk_score = _coerce_risk_score(review.risk_score)
+    if real_bugs:
+        risk_score = max(risk_score, _severity_floor(real_bugs))
+        if all(bug.severity == "Low" for bug in real_bugs):
+            risk_score = min(max(risk_score, 10), 25)
+    else:
+        risk_score = min(max(risk_score, 10), 25)
+
+    return ReviewResponse(
+        summary=review.summary,
+        risk_score=risk_score,
+        bugs=real_bugs,
+        improvements=_dedupe_strings(review.improvements),
+        test_cases=_dedupe_strings(review.test_cases),
+        fixed_code=review.fixed_code,
+        used_ai=review.used_ai,
+    )
 
 
 def _bug_title_key(title: str) -> str:
@@ -107,10 +169,10 @@ def _bug_title_key(title: str) -> str:
 
 
 def _merge_safety_checks(ai_review: ReviewResponse, safety_review: ReviewResponse) -> ReviewResponse:
+    ai_review = _normalize_review_response(ai_review)
+    safety_review = _normalize_review_response(safety_review)
     safety_bugs = [bug for bug in safety_review.bugs if not _is_placeholder_bug(bug)]
-    ai_bugs = ai_review.bugs
-    if safety_bugs:
-        ai_bugs = [bug for bug in ai_bugs if not _is_placeholder_bug(bug)]
+    ai_bugs = [bug for bug in ai_review.bugs if not _is_placeholder_bug(bug)]
 
     seen_bug_titles = {_bug_title_key(bug.title) for bug in ai_bugs}
     merged_bugs = list(ai_bugs)
@@ -121,16 +183,13 @@ def _merge_safety_checks(ai_review: ReviewResponse, safety_review: ReviewRespons
             merged_bugs.append(bug)
             seen_bug_titles.add(bug_key)
 
-    if not merged_bugs:
-        merged_bugs = ai_review.bugs
-
-    improvements = list(dict.fromkeys(ai_review.improvements + safety_review.improvements))
-    test_cases = list(dict.fromkeys(ai_review.test_cases + safety_review.test_cases))
+    improvements = _dedupe_strings(ai_review.improvements + safety_review.improvements)
+    test_cases = _dedupe_strings(ai_review.test_cases + safety_review.test_cases)
     summary = ai_review.summary
     if safety_bugs:
         summary = f"AI review completed. Local safety checks also flagged {len(safety_bugs)} issue(s)."
 
-    return ReviewResponse(
+    return _normalize_review_response(ReviewResponse(
         summary=summary,
         risk_score=max(ai_review.risk_score, safety_review.risk_score),
         bugs=merged_bugs,
@@ -138,7 +197,7 @@ def _merge_safety_checks(ai_review: ReviewResponse, safety_review: ReviewRespons
         test_cases=test_cases,
         fixed_code=ai_review.fixed_code,
         used_ai=True,
-    )
+    ))
 
 
 def _fallback_review(payload: ReviewRequest, reason: str | None = None) -> ReviewResponse:
@@ -174,6 +233,8 @@ def _fallback_review(payload: ReviewRequest, reason: str | None = None) -> Revie
         risk_score += 15
 
     has_division = _has_probable_division(code)
+    has_arithmetic = bool(re.search(r"[\w)\]\"']+\s*[-+*/]\s*[\w(\"']+", code))
+    calls_function_with_string = bool(re.search(r"\w+\s*\([^)]*['\"][^'\"]+['\"][^)]*\)", code))
 
     if re.search(r"/\s*0\b", code) or (has_division and re.search(r"\([^)]*,\s*0\s*\)", code)):
         bugs.append(
@@ -185,6 +246,28 @@ def _fallback_review(payload: ReviewRequest, reason: str | None = None) -> Revie
             )
         )
         risk_score += 25
+
+    if language in ["python", "py", "javascript", "typescript"] and has_arithmetic and calls_function_with_string:
+        bugs.append(
+            BugFinding(
+                title="Possible TypeError from non-numeric arithmetic input",
+                severity="High",
+                explanation="The code performs arithmetic and the sample call passes a string value, which can cause a runtime type error or invalid calculation.",
+                suggested_fix="Validate numeric inputs before arithmetic and return a clear error for non-numeric values.",
+            )
+        )
+        risk_score += 25
+
+    if "discount" in code_lower and re.search(r"final_price\s*<\s*0|return\s+0", code_lower):
+        bugs.append(
+            BugFinding(
+                title="Possible discount range business rule issue",
+                severity="Medium",
+                explanation="The code clamps negative prices to zero, but it does not validate whether discount values outside the expected range are allowed.",
+                suggested_fix="Validate the discount range, for example 0 <= discount <= 1, or document the intended business rule.",
+            )
+        )
+        risk_score += 15
 
     if re.search(r"\[[0-9]+\]", code) and re.search(r"\(\s*\[\s*\]\s*\)|=\s*\[\s*\]", code):
         bugs.append(
@@ -264,18 +347,11 @@ def _fallback_review(payload: ReviewRequest, reason: str | None = None) -> Revie
     if has_division:
         improvements.append("Add explicit validation around arithmetic edge cases such as zero, null, or missing values.")
 
+    if "discount" in code_lower:
+        improvements.append("Document and validate the expected discount range so business rules are explicit.")
+
     if not improvements:
         improvements.append("Add comments for complex logic and keep function names clear.")
-
-    if not bugs:
-        bugs.append(
-            BugFinding(
-                title="No critical issue detected by fallback engine",
-                severity="Low",
-                explanation="The fallback engine did not detect obvious high-risk patterns. A real AI review may find deeper logic issues.",
-                suggested_fix="Connect an AI API key for deeper analysis.",
-            )
-        )
 
     test_cases.extend(
         [
@@ -299,7 +375,7 @@ def _fallback_review(payload: ReviewRequest, reason: str | None = None) -> Revie
         or f"Fallback review completed for {payload.language}. Local rules found {len(bugs)} issue(s) and {len(improvements)} improvement idea(s)."
     )
 
-    return ReviewResponse(
+    return _normalize_review_response(ReviewResponse(
         summary=summary,
         risk_score=risk_score,
         bugs=bugs,
@@ -307,7 +383,7 @@ def _fallback_review(payload: ReviewRequest, reason: str | None = None) -> Revie
         test_cases=test_cases,
         fixed_code=None,
         used_ai=False,
-    )
+    ))
 
 
 def _review_from_ai_json(parsed: Dict[str, Any]) -> ReviewResponse:
@@ -315,7 +391,7 @@ def _review_from_ai_json(parsed: Dict[str, Any]) -> ReviewResponse:
     if fixed_code is not None:
         fixed_code = str(fixed_code).strip() or None
 
-    return ReviewResponse(
+    return _normalize_review_response(ReviewResponse(
         summary=str(parsed.get("summary") or "AI review completed.").strip(),
         risk_score=_coerce_risk_score(parsed.get("risk_score", 50)),
         bugs=_bug_findings(parsed.get("bugs", [])),
@@ -323,7 +399,7 @@ def _review_from_ai_json(parsed: Dict[str, Any]) -> ReviewResponse:
         test_cases=_string_list(parsed.get("test_cases"), ["Test the main success path and important failure paths."]),
         fixed_code=fixed_code,
         used_ai=True,
-    )
+    ))
 
 
 async def review_code(payload: ReviewRequest) -> ReviewResponse:
@@ -347,6 +423,15 @@ Return only valid JSON.
 Do not use markdown.
 Use null for fixed_code unless the fix is short and can be represented as a valid escaped JSON string.
 Do not put raw line breaks inside JSON string values.
+Risk score must match issue severity:
+- Critical issue: risk_score must be at least 70.
+- High issue: risk_score must be at least 50.
+- Medium issue: risk_score must be at least 30.
+- Only Low issues: risk_score should usually be between 10 and 25.
+Do not give Low risk when Critical or High issues exist.
+Mark issues as Critical only for crashes, data loss, security risks, or serious runtime failures.
+Mention business logic issues separately from runtime bugs.
+Keep fixed code practical and not overcomplicated.
 Your JSON must match this structure:
 {
   "summary": "short summary",
