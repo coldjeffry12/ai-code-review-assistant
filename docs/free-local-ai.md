@@ -27,10 +27,16 @@ Recommended model:
 ollama pull qwen2.5-coder:7b
 ```
 
-If your computer is slow or has limited memory, use the smaller model:
+If your computer is slow or has limited memory, use a smaller model:
 
 ```powershell
 ollama pull qwen2.5-coder:1.5b
+```
+
+Lowest-memory option:
+
+```powershell
+ollama pull qwen2.5-coder:0.5b
 ```
 
 ## 3. Start the Backend With Local AI
@@ -39,15 +45,24 @@ Create or update `backend/.env`:
 
 ```text
 OPENAI_API_KEY=ollama
-OPENAI_MODEL=qwen2.5-coder:7b
+OPENAI_MODEL=qwen2.5-coder:0.5b
 OPENAI_BASE_URL=http://localhost:11434/v1
+OPENAI_TIMEOUT_SECONDS=90
+OLLAMA_NUM_CTX=2048
+OLLAMA_NUM_PREDICT=900
 FRONTEND_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 ```
 
-For the smaller model, use:
+For a stronger computer, you can use:
 
 ```text
 OPENAI_MODEL=qwen2.5-coder:1.5b
+```
+
+Or:
+
+```text
+OPENAI_MODEL=qwen2.5-coder:7b
 ```
 
 Then run:

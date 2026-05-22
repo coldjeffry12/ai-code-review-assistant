@@ -57,6 +57,19 @@ def _has_probable_division(code: str) -> bool:
     return bool(re.search(r"[\w)\]]+\s*/\s*[\w(\[]+", code))
 
 
+def _is_ollama_base_url(base_url: str) -> bool:
+    normalized = base_url.lower()
+    return "ollama" in normalized or "localhost:11434" in normalized or "127.0.0.1:11434" in normalized
+
+
+def _int_env(name: str, default: int, min_value: int, max_value: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except ValueError:
+        value = default
+    return max(min_value, min(value, max_value))
+
+
 def _bug_findings(value: Any) -> list[BugFinding]:
     findings: list[BugFinding] = []
     if isinstance(value, list):
@@ -80,6 +93,52 @@ def _bug_findings(value: Any) -> list[BugFinding]:
             suggested_fix="Review edge cases manually and add tests around the most important behavior.",
         )
     ]
+
+
+def _is_placeholder_bug(bug: BugFinding) -> bool:
+    return bug.title.lower() == "no specific bug reported"
+
+
+def _bug_title_key(title: str) -> str:
+    normalized = title.lower()
+    normalized = re.sub(r"\b(possible|potential)\b", "", normalized)
+    normalized = re.sub(r"[^a-z0-9]+", " ", normalized)
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def _merge_safety_checks(ai_review: ReviewResponse, safety_review: ReviewResponse) -> ReviewResponse:
+    safety_bugs = [bug for bug in safety_review.bugs if not _is_placeholder_bug(bug)]
+    ai_bugs = ai_review.bugs
+    if safety_bugs:
+        ai_bugs = [bug for bug in ai_bugs if not _is_placeholder_bug(bug)]
+
+    seen_bug_titles = {_bug_title_key(bug.title) for bug in ai_bugs}
+    merged_bugs = list(ai_bugs)
+    for bug in safety_bugs:
+        bug_key = _bug_title_key(bug.title)
+        has_similar_bug = any(bug_key == seen or bug_key in seen or seen in bug_key for seen in seen_bug_titles)
+        if not has_similar_bug:
+            merged_bugs.append(bug)
+            seen_bug_titles.add(bug_key)
+
+    if not merged_bugs:
+        merged_bugs = ai_review.bugs
+
+    improvements = list(dict.fromkeys(ai_review.improvements + safety_review.improvements))
+    test_cases = list(dict.fromkeys(ai_review.test_cases + safety_review.test_cases))
+    summary = ai_review.summary
+    if safety_bugs:
+        summary = f"AI review completed. Local safety checks also flagged {len(safety_bugs)} issue(s)."
+
+    return ReviewResponse(
+        summary=summary,
+        risk_score=max(ai_review.risk_score, safety_review.risk_score),
+        bugs=merged_bugs,
+        improvements=improvements,
+        test_cases=test_cases,
+        fixed_code=ai_review.fixed_code,
+        used_ai=True,
+    )
 
 
 def _fallback_review(payload: ReviewRequest, reason: str | None = None) -> ReviewResponse:
@@ -271,11 +330,13 @@ async def review_code(payload: ReviewRequest) -> ReviewResponse:
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     model = os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip()
     base_url = os.getenv("OPENAI_BASE_URL", "").strip()
+    is_ollama = _is_ollama_base_url(base_url)
 
     if not api_key:
         return _fallback_review(payload, "Fallback review completed because OPENAI_API_KEY is not configured.")
 
-    client_options: dict[str, Any] = {"api_key": api_key, "timeout": 30.0}
+    timeout = float(os.getenv("OPENAI_TIMEOUT_SECONDS", "90" if is_ollama else "30"))
+    client_options: dict[str, Any] = {"api_key": api_key, "timeout": timeout}
     if base_url:
         client_options["base_url"] = base_url
     client = OpenAI(**client_options)
@@ -314,20 +375,35 @@ Code:
 ```
 """
 
+    completion_options: dict[str, Any] = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt.strip()},
+            {"role": "user", "content": user_prompt.strip()},
+        ],
+        "response_format": {"type": "json_object"},
+        "temperature": 0.2,
+    }
+
+    if is_ollama:
+        completion_options["extra_body"] = {
+            "options": {
+                "num_ctx": _int_env("OLLAMA_NUM_CTX", 2048, 512, 8192),
+                "num_predict": _int_env("OLLAMA_NUM_PREDICT", 900, 128, 4096),
+            }
+        }
+
     try:
         completion = await asyncio.to_thread(
             client.chat.completions.create,
-            model=model,
-            messages=[
-                {"role": "system", "content": system_prompt.strip()},
-                {"role": "user", "content": user_prompt.strip()},
-            ],
-            temperature=0.2,
+            **completion_options,
         )
 
         content = completion.choices[0].message.content or "{}"
         parsed = _safe_json_loads(content)
-        return _review_from_ai_json(parsed)
+        ai_review = _review_from_ai_json(parsed)
+        safety_review = _fallback_review(payload)
+        return _merge_safety_checks(ai_review, safety_review)
     except Exception:
         return _fallback_review(
             payload,
