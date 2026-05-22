@@ -1,0 +1,29 @@
+from typing import List, Optional
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class ReviewRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    language: str = Field(..., min_length=1, max_length=50)
+    code: str = Field(..., min_length=5, max_length=20000)
+    focus: str = Field(default="bugs, security, performance, readability", max_length=200)
+
+
+class BugFinding(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    title: str
+    severity: str
+    explanation: str
+    suggested_fix: str
+
+
+class ReviewResponse(BaseModel):
+    summary: str
+    risk_score: int = Field(..., ge=0, le=100)
+    bugs: List[BugFinding]
+    improvements: List[str]
+    test_cases: List[str]
+    fixed_code: Optional[str] = None
+    used_ai: bool
