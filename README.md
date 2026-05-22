@@ -72,6 +72,7 @@ ai-code-review-assistant/
 |-- .gitignore
 |-- docker-compose.yml
 |-- LICENSE
+|-- render.yaml
 `-- README.md
 ```
 
@@ -250,7 +251,9 @@ pytest
 
 ## Deployment
 
-### Backend on Render or Railway
+Full deployment steps for Render and Vercel are in [docs/deployment.md](docs/deployment.md).
+
+### Backend on Render
 
 Use these settings:
 
@@ -269,7 +272,7 @@ FRONTEND_ORIGINS=https://your-frontend-domain.vercel.app
 
 If `OPENAI_API_KEY` is empty, the deployed backend still returns fallback reviews.
 
-### Frontend on Vercel or Netlify
+### Frontend on Vercel
 
 Use these settings:
 
