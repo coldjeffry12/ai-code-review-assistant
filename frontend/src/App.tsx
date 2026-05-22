@@ -1,4 +1,4 @@
-import { type FormEvent, useMemo, useState } from 'react'
+import { type FormEvent, useEffect, useMemo, useState } from 'react'
 import { reviewCode, type ReviewResponse } from './api'
 
 const defaultCode = `def divide_numbers(a, b):
@@ -7,6 +7,17 @@ const defaultCode = `def divide_numbers(a, b):
 print(divide_numbers(10, 0))`
 
 const languageOptions = ['Python', 'JavaScript', 'TypeScript', 'React', 'Java', 'C++', 'SQL']
+
+type Theme = 'light' | 'dark'
+
+function getInitialTheme(): Theme {
+  const savedTheme = window.localStorage.getItem('theme')
+  if (savedTheme === 'light' || savedTheme === 'dark') {
+    return savedTheme
+  }
+
+  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+}
 
 function getRiskMeta(score: number) {
   if (score >= 76) {
@@ -22,6 +33,7 @@ function getRiskMeta(score: number) {
 }
 
 function App() {
+  const [theme, setTheme] = useState<Theme>(getInitialTheme)
   const [language, setLanguage] = useState('Python')
   const [focus, setFocus] = useState('bugs, security, performance, readability')
   const [code, setCode] = useState(defaultCode)
@@ -30,6 +42,11 @@ function App() {
   const [error, setError] = useState('')
 
   const riskMeta = useMemo(() => (result ? getRiskMeta(result.risk_score) : null), [result])
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme
+    window.localStorage.setItem('theme', theme)
+  }, [theme])
 
   async function handleReview(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -55,7 +72,21 @@ function App() {
           <h1>AI Code Review Assistant</h1>
           <p className="subtitle">Bug finder, risk scoring, improvement notes, and test ideas for pasted code.</p>
         </div>
-        <div className="statusBadge">OpenAI optional</div>
+        <div className="headerActions">
+          <button
+            className="themeToggle"
+            type="button"
+            aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}
+            aria-pressed={theme === 'dark'}
+            onClick={() => setTheme((currentTheme) => (currentTheme === 'dark' ? 'light' : 'dark'))}
+          >
+            <span className="themeToggleTrack" aria-hidden="true">
+              <span className="themeToggleThumb" />
+            </span>
+            <span>{theme === 'dark' ? 'Dark' : 'Light'}</span>
+          </button>
+          <div className="statusBadge">OpenAI optional</div>
+        </div>
       </header>
 
       <section className="layout">
