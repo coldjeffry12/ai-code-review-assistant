@@ -19,7 +19,7 @@ The backend uses an OpenAI-compatible API when `OPENAI_API_KEY` is configured. I
 - Backend health check: https://ai-code-review-backend-c17u.onrender.com/health
 - Backend API docs: https://ai-code-review-backend-c17u.onrender.com/docs
 
-The live demo runs in free fallback mode with no `OPENAI_API_KEY`. It uses the backend rule-based review engine to detect common issues such as division by zero, hardcoded secrets, JavaScript `var` usage, missing null checks, unsafe collection access, and SQL string concatenation risk.
+The live demo is configured for optional free AI through an OpenAI-compatible provider. If the free AI provider is unavailable, throttled, or returns invalid JSON, the backend automatically uses the rule-based fallback engine so the app still works.
 
 For free local AI review, run an open-source model with Ollama and point the backend to `http://localhost:11434/v1`. See [docs/free-local-ai.md](docs/free-local-ai.md).
 
@@ -236,9 +236,9 @@ Docker Compose works without an API key. To use a real AI provider, set environm
 
 ## Testing the Review Feature
 
-The project includes manual review examples in [docs/test-cases.md](docs/test-cases.md). These examples cover Python, JavaScript, TypeScript, SQL, and Java bug patterns such as division by zero, hardcoded secrets, unsafe array access, missing null checks, and unsafe SQL string concatenation.
+The project includes manual review examples in [docs/test-cases.md](docs/test-cases.md). These examples cover Python, JavaScript, TypeScript, React, Java, C++, and SQL bug patterns such as division by zero, hardcoded secrets, unsafe array access, missing null checks, unsafe HTML rendering, null pointer risk, and unsafe SQL string concatenation.
 
-Manual review test cases were tested against the live backend endpoint in fallback mode with no `OPENAI_API_KEY`. The current documented run passed all 8 cases, but this does not guarantee every possible bug will be detected.
+Manual review test cases were tested against the live backend endpoint. The latest language coverage run passed issue detection for all 7 frontend language options. During that repeated run, the free AI provider was unavailable or returned invalid JSON, so fallback mode handled the reviews. This does not guarantee every possible bug will be detected.
 
 Backend fallback tests can be run with pytest:
 

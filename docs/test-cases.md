@@ -12,6 +12,29 @@ Test run notes:
 - Backend status: `GET /health` returned `{"status":"ok"}`
 - Frontend status: `http://localhost:5173` returned HTTP 200
 
+Live deployment language coverage:
+
+- Manual API test date: May 23, 2026
+- Endpoint tested: `POST https://ai-code-review-backend-c17u.onrender.com/api/review`
+- Health check: `GET https://ai-code-review-backend-c17u.onrender.com/health` returned `{"status":"ok"}`
+- Frontend language options tested: Python, JavaScript, TypeScript, React, Java, C++, SQL
+- Result: all 7 language examples returned review output and detected the expected issue.
+- Mode during final repeated run: fallback review. The free AI provider was unavailable or returned invalid JSON during the repeated test run, so the backend used the fallback review engine instead of failing.
+
+| Language | Live test case | Actual live result summary | Risk score | AI used | Status |
+| --- | --- | --- | --- | --- | --- |
+| Python | Division by zero | Detected `Potential division by zero`; suggested denominator validation and arithmetic edge case tests. | 40/100 | No | Pass |
+| JavaScript | `var` usage and empty array access | Detected `Possible empty collection access`; suggested `let` or `const` instead of `var`. | 35/100 | No | Pass |
+| TypeScript | Missing undefined check | Detected `Possible missing null or undefined check`; suggested a guard clause or optional chaining. | 30/100 | No | Pass |
+| React | Unsafe HTML rendering | Detected `Possible unsafe HTML injection`; suggested safer rendering or sanitization. | 40/100 | No | Pass |
+| Java | Null pointer risk | Detected `Possible null pointer risk`; suggested validating the object before dereferencing it. | 40/100 | No | Pass |
+| C++ | Null pointer method call and division by zero | Detected `Potential division by zero` and `Possible null pointer risk`. | 65/100 | No | Pass |
+| SQL | Unsafe string concatenation | Detected `Possible SQL injection`; suggested parameterized queries. | 50/100 | No | Pass |
+
+Free AI mode note:
+
+The deployed backend is configured for optional free AI through an OpenAI-compatible provider. During testing, individual requests can use AI when the provider responds correctly, but repeated calls may be throttled or may return invalid JSON. The fallback engine is intentionally kept so the live app remains usable without paid AI access.
+
 ## How to Use These Test Cases
 
 1. Start the backend and frontend.
