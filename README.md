@@ -13,6 +13,14 @@ Users paste code, choose a programming language, and receive:
 
 The backend uses an OpenAI-compatible API when `OPENAI_API_KEY` is configured. If no key is available, the app still works with a local rule-based fallback review engine.
 
+## Live Demo
+
+- Frontend: https://ai-code-review-assistant-seven.vercel.app
+- Backend health check: https://ai-code-review-backend-c17u.onrender.com/health
+- Backend API docs: https://ai-code-review-backend-c17u.onrender.com/docs
+
+The live demo runs in free fallback mode with no `OPENAI_API_KEY`. It uses the backend rule-based review engine to detect common issues such as division by zero, hardcoded secrets, JavaScript `var` usage, missing null checks, unsafe collection access, and SQL string concatenation risk.
+
 ## Tech Stack
 
 Frontend:
@@ -353,9 +361,14 @@ This project is licensed under the MIT License. See [LICENSE](LICENSE).
 
 ## Current Status
 
-The project is designed to run locally with:
+The project is deployed and ready for GitHub portfolio review.
+
+Live links:
+
+- Frontend: https://ai-code-review-assistant-seven.vercel.app
+- Backend API docs: https://ai-code-review-backend-c17u.onrender.com/docs
+
+The project can also run locally with:
 
 - Backend: `uvicorn app.main:app --reload --port 8000`
 - Frontend: `npm run dev`
-
-The app is ready for GitHub portfolio review. Deployment URLs can be added after hosting the frontend and backend.

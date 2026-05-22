@@ -53,6 +53,10 @@ def _string_list(value: Any, fallback: list[str]) -> list[str]:
     return fallback
 
 
+def _has_probable_division(code: str) -> bool:
+    return bool(re.search(r"[\w)\]]+\s*/\s*[\w(\[]+", code))
+
+
 def _bug_findings(value: Any) -> list[BugFinding]:
     findings: list[BugFinding] = []
     if isinstance(value, list):
@@ -110,7 +114,9 @@ def _fallback_review(payload: ReviewRequest, reason: str | None = None) -> Revie
         )
         risk_score += 15
 
-    if re.search(r"/\s*0\b", code) or ("/" in code and re.search(r"\([^)]*,\s*0\s*\)", code)):
+    has_division = _has_probable_division(code)
+
+    if re.search(r"/\s*0\b", code) or (has_division and re.search(r"\([^)]*,\s*0\s*\)", code)):
         bugs.append(
             BugFinding(
                 title="Potential division by zero",
@@ -196,7 +202,7 @@ def _fallback_review(payload: ReviewRequest, reason: str | None = None) -> Revie
     if len(code.splitlines()) > 80:
         improvements.append("Consider splitting this code into smaller functions or modules.")
 
-    if "/" in code:
+    if has_division:
         improvements.append("Add explicit validation around arithmetic edge cases such as zero, null, or missing values.")
 
     if not improvements:
@@ -222,7 +228,7 @@ def _fallback_review(payload: ReviewRequest, reason: str | None = None) -> Revie
         ]
     )
 
-    if "/" in code:
+    if has_division:
         test_cases.append("Test division or arithmetic behavior with zero and negative values.")
 
     if re.search(r"(password|api[_-]?key|secret|token)", code_lower):

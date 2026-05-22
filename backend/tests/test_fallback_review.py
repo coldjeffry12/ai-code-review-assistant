@@ -66,3 +66,21 @@ def test_javascript_var_gets_improvement_suggestion(monkeypatch):
     suggestions = " ".join(body["improvements"]).lower()
     assert response.status_code == 200
     assert "let or const" in suggestions
+
+
+def test_html_strings_do_not_trigger_arithmetic_suggestion(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    response = client.post(
+        "/api/review",
+        json={
+            "language": "JavaScript",
+            "code": 'function render(items) {\n  var html = "<li>" + items[0] + "</li>";\n  return html;\n}\nrender([]);',
+            "focus": "bugs, security",
+        },
+    )
+    body = response.json()
+
+    suggestions = " ".join(body["improvements"]).lower()
+    assert response.status_code == 200
+    assert "arithmetic edge cases" not in suggestions
