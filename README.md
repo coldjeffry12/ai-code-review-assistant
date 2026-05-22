@@ -157,14 +157,14 @@ Free local AI option with Ollama:
 
 ```text
 OPENAI_API_KEY=ollama
-OPENAI_MODEL=qwen2.5-coder:0.5b
+OPENAI_MODEL=smollm2:135m
 OPENAI_BASE_URL=http://localhost:11434/v1
 OPENAI_TIMEOUT_SECONDS=90
-OLLAMA_NUM_CTX=2048
-OLLAMA_NUM_PREDICT=900
+OLLAMA_NUM_CTX=512
+OLLAMA_NUM_PREDICT=128
 ```
 
-More details are in [docs/free-local-ai.md](docs/free-local-ai.md).
+More details, including stronger coding model options, are in [docs/free-local-ai.md](docs/free-local-ai.md).
 
 Frontend:
 

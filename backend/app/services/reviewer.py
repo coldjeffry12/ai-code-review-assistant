@@ -388,8 +388,8 @@ Code:
     if is_ollama:
         completion_options["extra_body"] = {
             "options": {
-                "num_ctx": _int_env("OLLAMA_NUM_CTX", 2048, 512, 8192),
-                "num_predict": _int_env("OLLAMA_NUM_PREDICT", 900, 128, 4096),
+                "num_ctx": _int_env("OLLAMA_NUM_CTX", 512, 256, 8192),
+                "num_predict": _int_env("OLLAMA_NUM_PREDICT", 128, 64, 4096),
             }
         }
 
