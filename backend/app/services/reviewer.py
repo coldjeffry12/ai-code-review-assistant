@@ -345,6 +345,8 @@ async def review_code(payload: ReviewRequest) -> ReviewResponse:
 You are a senior software engineer and security-aware code reviewer.
 Return only valid JSON.
 Do not use markdown.
+Use null for fixed_code unless the fix is short and can be represented as a valid escaped JSON string.
+Do not put raw line breaks inside JSON string values.
 Your JSON must match this structure:
 {
   "summary": "short summary",
@@ -359,7 +361,7 @@ Your JSON must match this structure:
   ],
   "improvements": ["suggestion 1"],
   "test_cases": ["test idea 1"],
-  "fixed_code": "optional improved code or null"
+  "fixed_code": null
 }
 """
 
