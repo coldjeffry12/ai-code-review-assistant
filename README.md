@@ -71,6 +71,7 @@ ai-code-review-assistant/
 |   `-- README.md
 |-- .gitignore
 |-- docker-compose.yml
+|-- LICENSE
 `-- README.md
 ```
 
@@ -300,7 +301,7 @@ Before uploading:
 Suggested GitHub description:
 
 ```text
-Full-stack AI Code Review Assistant using React, TypeScript, FastAPI, and OpenAI-compatible APIs. Includes fallback review logic, risk scoring, bug findings, test ideas, Docker support, and deployment docs.
+Full-stack AI Code Review Assistant using React, TypeScript, Python FastAPI, fallback review logic, test cases, and screenshots.
 ```
 
 Suggested CV bullet:
@@ -343,6 +344,10 @@ More detail is in [docs/ai-workflow.md](docs/ai-workflow.md).
 - Use environment variables in deployment platforms.
 - The fallback review engine is intentionally simple and is not a replacement for a human security review.
 
+## License
+
+This project is licensed under the MIT License. See [LICENSE](LICENSE).
+
 ## Current Status
 
 The project is designed to run locally with:
@@ -350,4 +355,4 @@ The project is designed to run locally with:
 - Backend: `uvicorn app.main:app --reload --port 8000`
 - Frontend: `npm run dev`
 
-The app can be uploaded to GitHub and deployed once screenshots and live deployment URLs are added.
+The app is ready for GitHub portfolio review. Deployment URLs can be added after hosting the frontend and backend.

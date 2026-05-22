@@ -39,7 +39,7 @@ def test_hardcoded_password_gets_detected(monkeypatch):
         "/api/review",
         json={
             "language": "Python",
-            "code": 'password = "admin123"\ndef login():\n    return password',
+            "code": 'password = "[redacted-demo-password]"\ndef login():\n    return password',
             "focus": "security",
         },
     )

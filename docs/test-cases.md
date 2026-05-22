@@ -61,8 +61,8 @@ Language: Python
 Buggy input code:
 
 ```python
-API_KEY = "demo-secret-key"
-password = "admin123"
+API_KEY = "[redacted-demo-key]"
+password = "[redacted-demo-password]"
 
 def connect():
     return f"Using {API_KEY} and {password}"
