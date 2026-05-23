@@ -14,6 +14,14 @@ from app.schemas import ReviewRequest, ReviewResponse, BugFinding
 
 _REVIEW_CACHE: dict[str, dict[str, Any]] = {}
 
+_GENERIC_TEST_CASES = {
+    "test normal valid input.",
+    "test empty or missing input.",
+    "test invalid data type input.",
+    "test boundary values and large input.",
+    "test error-handling behavior.",
+}
+
 
 def _cache_limit() -> int:
     return _int_env("REVIEW_CACHE_MAX_ENTRIES", 50, 1, 500)
@@ -84,7 +92,8 @@ def _dedupe_strings(items: list[str]) -> list[str]:
 
 
 def _has_probable_division(code: str) -> bool:
-    return bool(re.search(r"[\w)\]]+\s*/\s*[\w(\[]+", code))
+    code_without_strings = re.sub(r"(['\"])(?:\\.|(?!\1).)*\1", "\"\"", code)
+    return bool(re.search(r"[\w)\]]+\s*/\s*[\w(\[]+", code_without_strings))
 
 
 def _is_ollama_base_url(base_url: str) -> bool:
@@ -258,7 +267,7 @@ def _normalize_severity(severity: str) -> str:
 def _severity_floor(bugs: list[BugFinding]) -> int:
     severities = {_normalize_severity(bug.severity) for bug in bugs if not _is_placeholder_bug(bug)}
     if "Critical" in severities:
-        return 70
+        return 80
     if "High" in severities:
         return 51
     if "Medium" in severities:
@@ -266,8 +275,75 @@ def _severity_floor(bugs: list[BugFinding]) -> int:
     return 10
 
 
+def _bug_text(bug: BugFinding) -> str:
+    return " ".join([bug.title, bug.severity, bug.explanation, bug.suggested_fix]).lower()
+
+
+def _bug_category(bug: BugFinding) -> str:
+    text = _bug_text(bug)
+
+    category_patterns = [
+        ("sql_injection", ["sql injection", "parameterized quer", "prepared statement", "unsafe query"]),
+        ("raw_card", ["raw card", "card number", "card_number", "cardnumber", "credit card", "payment card", "cvv", "pci"]),
+        ("path_traversal", ["path traversal", "arbitrary file", "unsafe filename", "file write", "directory traversal"]),
+        ("dynamic_execution", ["eval", "exec", "dynamic execution", "arbitrary code"]),
+        ("hardcoded_secret", ["hardcoded", "api key", "secret", "token", "password", "admin_token", "payment_token"]),
+        ("type_mismatch", ["typeerror", "type error", "type mismatch", "non-numeric", "invalid data type"]),
+        ("negative_payment", ["negative refund", "negative payment", "refund amount", "payment amount", "discount range"]),
+        ("collection_none", ["fetchone", "none check", "empty collection", "index access", "list index", "array access"]),
+        ("request_exception", ["request exception", "network exception", "without exception handling", "raise_for_status"]),
+        ("request_timeout", ["missing timeout", "without a timeout"]),
+        ("db_connection", ["connection not closed", "db connection", "database connection", "delete_user"]),
+        ("transaction_rollback", ["rollback", "transaction", "multi-step database"]),
+        ("datetime_json", ["datetime", "json serial", "json.dumps", "created_at"]),
+        ("weak_error_handling", ["weak error handling", "bare except", "broad exception"]),
+        ("null_pointer", ["null pointer", "nullptr", "null reference"]),
+        ("html_injection", ["html injection", "xss", "dangerouslysetinnerhtml", "innerhtml"]),
+        ("division_by_zero", ["division by zero", "denominator", "divide by zero"]),
+    ]
+
+    for category, patterns in category_patterns:
+        if any(pattern in text for pattern in patterns):
+            return category
+
+    return _bug_title_key(bug.title)
+
+
+def _dedupe_bug_findings(bugs: list[BugFinding]) -> list[BugFinding]:
+    deduped: list[BugFinding] = []
+    seen_categories: set[str] = set()
+
+    for bug in bugs:
+        if _is_placeholder_bug(bug):
+            continue
+        category = _bug_category(bug)
+        if category in seen_categories:
+            continue
+        seen_categories.add(category)
+        deduped.append(bug)
+
+    return deduped
+
+
+def _clean_test_cases(test_cases: list[str]) -> list[str]:
+    deduped = _dedupe_strings(test_cases)
+    specific_tests = [item for item in deduped if item.strip().lower() not in _GENERIC_TEST_CASES]
+    return specific_tests or deduped
+
+
+def _score_security_payment_context(bugs: list[BugFinding]) -> int | None:
+    categories = {_bug_category(bug) for bug in bugs}
+    critical_count = sum(1 for bug in bugs if bug.severity == "Critical")
+
+    if "sql_injection" in categories and ("raw_card" in categories or "hardcoded_secret" in categories):
+        return 100
+    if critical_count >= 2:
+        return 95
+    return None
+
+
 def _normalize_review_response(review: ReviewResponse) -> ReviewResponse:
-    real_bugs = [
+    real_bugs = _dedupe_bug_findings([
         BugFinding(
             title=bug.title,
             severity=_normalize_severity(bug.severity),
@@ -276,11 +352,14 @@ def _normalize_review_response(review: ReviewResponse) -> ReviewResponse:
         )
         for bug in review.bugs
         if not _is_placeholder_bug(bug)
-    ]
+    ])
 
     risk_score = _coerce_risk_score(review.risk_score)
     if real_bugs:
         risk_score = max(risk_score, _severity_floor(real_bugs))
+        security_payment_floor = _score_security_payment_context(real_bugs)
+        if security_payment_floor is not None:
+            risk_score = max(risk_score, security_payment_floor)
         if all(bug.severity == "Low" for bug in real_bugs):
             risk_score = min(max(risk_score, 10), 25)
     else:
@@ -291,7 +370,7 @@ def _normalize_review_response(review: ReviewResponse) -> ReviewResponse:
         risk_score=risk_score,
         bugs=real_bugs,
         improvements=_dedupe_strings(review.improvements),
-        test_cases=_dedupe_strings(review.test_cases),
+        test_cases=_clean_test_cases(review.test_cases),
         fixed_code=review.fixed_code,
         used_ai=review.used_ai,
         review_source=review.review_source,
@@ -307,26 +386,90 @@ def _bug_title_key(title: str) -> str:
     return re.sub(r"\s+", " ", normalized).strip()
 
 
+def _has_unsafe_sql_construction(code_lower: str) -> bool:
+    has_sql = re.search(r"\b(select|insert|update|delete)\b", code_lower)
+    has_concat_or_format = re.search(r"(\+\s*\w+|f[\"']|\.format\s*\(|%\s*\()", code_lower, re.DOTALL)
+    return bool(has_sql and has_concat_or_format)
+
+
+def _has_raw_card_handling(code_lower: str) -> bool:
+    return bool(re.search(r"\b(card_number|cardnumber|credit_card|pan|cvv)\b", code_lower))
+
+
+def _has_unsafe_path_construction(code_lower: str) -> bool:
+    has_file_write = re.search(r"\b(open|write_text|write_bytes)\s*\(", code_lower) or ".save(" in code_lower
+    has_user_filename = re.search(r"\b(filename|file_name|path|upload|user_input)\b", code_lower)
+    has_path_join = "os.path.join" in code_lower or "pathlib.path" in code_lower or "/" in code_lower
+    return bool(has_file_write and has_user_filename and has_path_join)
+
+
+def _has_requests_post(code_lower: str) -> bool:
+    return "requests.post" in code_lower
+
+
+def _has_db_connection_without_close(code_lower: str) -> bool:
+    has_connection = "sqlite3.connect" in code_lower or "get_db_connection" in code_lower or "db.connect" in code_lower
+    if not has_connection:
+        return False
+    if "with sqlite3.connect" in code_lower or "with get_db_connection" in code_lower:
+        return False
+    if ".close(" not in code_lower:
+        return True
+    return "def delete_user" in code_lower and "return" in code_lower and "finally" not in code_lower
+
+
+def _has_missing_transaction_rollback(code_lower: str) -> bool:
+    write_count = len(re.findall(r"\.execute\s*\(\s*[f]?[\"']\s*(insert|update|delete)\b", code_lower))
+    return write_count >= 2 and ".commit(" in code_lower and ".rollback(" not in code_lower
+
+
+def _has_datetime_json_risk(code_lower: str) -> bool:
+    return "json.dumps" in code_lower and ("datetime" in code_lower or "created_at" in code_lower)
+
+
+def _has_unchecked_fetchone(code_lower: str) -> bool:
+    if ".fetchone(" not in code_lower:
+        return False
+
+    assigned_results = re.findall(r"(\w+)\s*=\s*[^\n]*\.fetchone\s*\(", code_lower)
+    if not assigned_results:
+        return True
+
+    for variable in assigned_results:
+        guard_pattern = rf"if\s+(not\s+{re.escape(variable)}|{re.escape(variable)}\s+is\s+none|{re.escape(variable)}\s*==\s*none)"
+        if not re.search(guard_pattern, code_lower):
+            return True
+
+    return False
+
+
+def _has_negative_payment_amount(code_lower: str) -> bool:
+    has_payment_context = re.search(r"\b(refund|payment|charge|amount|total)\b", code_lower)
+    has_negative_path = re.search(r"(<\s*0|-\s*amount|amount\s*=\s*-|refund_amount\s*=\s*-|payment_amount\s*=\s*-)", code_lower)
+    return bool(has_payment_context and has_negative_path)
+
+
 def _merge_safety_checks(ai_review: ReviewResponse, safety_review: ReviewResponse) -> ReviewResponse:
     ai_review = _normalize_review_response(ai_review)
     safety_review = _normalize_review_response(safety_review)
     safety_bugs = [bug for bug in safety_review.bugs if not _is_placeholder_bug(bug)]
     ai_bugs = [bug for bug in ai_review.bugs if not _is_placeholder_bug(bug)]
 
-    seen_bug_titles = {_bug_title_key(bug.title) for bug in ai_bugs}
+    seen_bug_categories = {_bug_category(bug) for bug in ai_bugs}
     merged_bugs = list(ai_bugs)
+    added_safety_count = 0
     for bug in safety_bugs:
-        bug_key = _bug_title_key(bug.title)
-        has_similar_bug = any(bug_key == seen or bug_key in seen or seen in bug_key for seen in seen_bug_titles)
-        if not has_similar_bug:
+        bug_category = _bug_category(bug)
+        if bug_category not in seen_bug_categories:
             merged_bugs.append(bug)
-            seen_bug_titles.add(bug_key)
+            seen_bug_categories.add(bug_category)
+            added_safety_count += 1
 
     improvements = _dedupe_strings(ai_review.improvements + safety_review.improvements)
     test_cases = _dedupe_strings(ai_review.test_cases + safety_review.test_cases)
     summary = ai_review.summary
-    if safety_bugs:
-        summary = f"AI review completed. Local safety checks also flagged {len(safety_bugs)} issue(s)."
+    if added_safety_count:
+        summary = f"AI review completed. Local safety checks also flagged {added_safety_count} additional issue(s)."
 
     return _normalize_review_response(ReviewResponse(
         summary=summary,
@@ -351,9 +494,10 @@ def _fallback_review(payload: ReviewRequest, reason: str | None = None) -> Revie
     risk_score = 15
 
     if re.search(r"(password|api[_-]?key|secret|token)\s*=", code_lower):
+        is_payment_or_admin_secret = bool(re.search(r"(admin|payment|stripe|paypal|secret|token)", code_lower))
         bugs.append(
             BugFinding(
-                title="Possible hardcoded secret",
+                title="Hardcoded payment/admin secret in source code" if is_payment_or_admin_secret else "Hardcoded secret in source code",
                 severity="High",
                 explanation="The code appears to assign a password, API key, token, or secret directly in source code.",
                 suggested_fix="Move secrets to environment variables and never commit them to GitHub.",
@@ -371,6 +515,116 @@ def _fallback_review(payload: ReviewRequest, reason: str | None = None) -> Revie
             )
         )
         risk_score += 15
+
+    if _has_unsafe_sql_construction(code_lower):
+        bugs.append(
+            BugFinding(
+                title="SQL injection from unsafe query construction",
+                severity="Critical",
+                explanation="The code appears to build SQL using string concatenation, formatting, or an f-string with external values.",
+                suggested_fix="Use parameterized queries and never insert user-controlled values directly into SQL strings.",
+            )
+        )
+        risk_score += 40
+
+    if _has_raw_card_handling(code_lower):
+        bugs.append(
+            BugFinding(
+                title="Raw card number handling without tokenization",
+                severity="Critical",
+                explanation="The code appears to handle raw card numbers or CVV data directly, which creates serious payment security and PCI compliance risk.",
+                suggested_fix="Use a payment provider tokenization flow and avoid storing, logging, or transmitting raw card data in application code.",
+            )
+        )
+        risk_score += 40
+
+    if _has_unsafe_path_construction(code_lower):
+        bugs.append(
+            BugFinding(
+                title="Path traversal risk in file path construction",
+                severity="Critical" if re.search(r"\b(open|write_text|write_bytes)\s*\(", code_lower) else "High",
+                explanation="The code appears to construct a file path from user-controlled filename or path data before writing or saving a file.",
+                suggested_fix="Normalize and validate filenames, reject path separators, and write only inside an allowed directory.",
+            )
+        )
+        risk_score += 35
+
+    if _has_requests_post(code_lower) and "timeout=" not in code_lower:
+        bugs.append(
+            BugFinding(
+                title="requests.post call missing timeout",
+                severity="Medium",
+                explanation="The code sends an HTTP request without a timeout, so a slow external service can hang the request indefinitely.",
+                suggested_fix="Pass a reasonable timeout to requests.post, such as timeout=10, and tune it for the external service.",
+            )
+        )
+        risk_score += 15
+
+    if _has_requests_post(code_lower) and "except" not in code_lower:
+        bugs.append(
+            BugFinding(
+                title="requests.post call missing exception handling",
+                severity="Medium",
+                explanation="The code sends an HTTP request but does not appear to handle network errors, timeouts, or non-success responses.",
+                suggested_fix="Wrap the call in targeted exception handling and call raise_for_status or handle unsuccessful status codes explicitly.",
+            )
+        )
+        risk_score += 15
+
+    if _has_db_connection_without_close(code_lower):
+        bugs.append(
+            BugFinding(
+                title="Database connection may not close on early return",
+                severity="High" if "def delete_user" in code_lower else "Medium",
+                explanation="The code opens a database connection without a clear finally block, context manager, or guaranteed close path.",
+                suggested_fix="Use a context manager or close the connection in a finally block so early returns and exceptions do not leak connections.",
+            )
+        )
+        risk_score += 25
+
+    if _has_missing_transaction_rollback(code_lower):
+        bugs.append(
+            BugFinding(
+                title="Missing transaction rollback for multi-step database write",
+                severity="High",
+                explanation="The code performs multiple database write operations and commits, but does not appear to roll back if one step fails.",
+                suggested_fix="Wrap related writes in one transaction and call rollback in the exception path before re-raising or returning an error.",
+            )
+        )
+        risk_score += 25
+
+    if _has_datetime_json_risk(code_lower):
+        bugs.append(
+            BugFinding(
+                title="Datetime JSON serialization risk",
+                severity="Medium",
+                explanation="json.dumps does not serialize datetime objects by default, so exporting values such as created_at can crash or produce invalid output.",
+                suggested_fix="Convert datetime values to ISO strings before json.dumps or provide a safe serializer.",
+            )
+        )
+        risk_score += 15
+
+    if _has_unchecked_fetchone(code_lower):
+        bugs.append(
+            BugFinding(
+                title="fetchone result used without None check",
+                severity="High" if "delete_user" in code_lower or "payment" in code_lower else "Medium",
+                explanation="The code calls fetchone but does not appear to check whether the query returned a row before using the result.",
+                suggested_fix="Check for None immediately after fetchone and return a clear not-found response before indexing or dereferencing the row.",
+            )
+        )
+        risk_score += 20
+
+    if _has_negative_payment_amount(code_lower):
+        bugs.append(
+            BugFinding(
+                title="Negative refund/payment amount business logic risk",
+                severity="Critical" if "refund" in code_lower and "payment" in code_lower else "High",
+                explanation="The code appears to allow or create a negative refund, payment, charge, or amount value, which can break payment and accounting logic.",
+                suggested_fix="Validate payment and refund amounts before processing, reject negative values, and define explicit business rules for credits.",
+            )
+        )
+        risk_score += 30
 
     has_division = _has_probable_division(code)
     has_arithmetic = bool(re.search(r"[\w)\]\"']+\s*[-+*/]\s*[\w(\"']+", code))
@@ -390,7 +644,7 @@ def _fallback_review(payload: ReviewRequest, reason: str | None = None) -> Revie
     if language in ["python", "py", "javascript", "typescript"] and has_arithmetic and calls_function_with_string:
         bugs.append(
             BugFinding(
-                title="Possible TypeError from non-numeric arithmetic input",
+                title="Type mismatch risk in arithmetic calculation",
                 severity="High",
                 explanation="The code performs arithmetic and the sample call passes a string value, which can cause a runtime type error or invalid calculation.",
                 suggested_fix="Validate numeric inputs before arithmetic and return a clear error for non-numeric values.",
@@ -401,7 +655,7 @@ def _fallback_review(payload: ReviewRequest, reason: str | None = None) -> Revie
     if "discount" in code_lower and re.search(r"final_price\s*<\s*0|return\s+0", code_lower):
         bugs.append(
             BugFinding(
-                title="Possible discount range business rule issue",
+                title="Discount range business rule issue",
                 severity="Medium",
                 explanation="The code clamps negative prices to zero, but it does not validate whether discount values outside the expected range are allowed.",
                 suggested_fix="Validate the discount range, for example 0 <= discount <= 1, or document the intended business rule.",
@@ -412,7 +666,7 @@ def _fallback_review(payload: ReviewRequest, reason: str | None = None) -> Revie
     if re.search(r"\[[0-9]+\]", code) and re.search(r"\(\s*\[\s*\]\s*\)|=\s*\[\s*\]", code):
         bugs.append(
             BugFinding(
-                title="Possible empty collection access",
+                title="Unchecked collection/index access",
                 severity="High",
                 explanation="The code indexes into a list or array while also showing an empty collection case.",
                 suggested_fix="Check that the collection has enough items before reading by index.",
@@ -464,10 +718,10 @@ def _fallback_review(payload: ReviewRequest, reason: str | None = None) -> Revie
         )
         risk_score += 25
 
-    if language == "sql" and re.search(r"(select|insert|update|delete).*(\+|f\"|f')", code_lower, re.DOTALL):
+    if language == "sql" and _has_unsafe_sql_construction(code_lower):
         bugs.append(
             BugFinding(
-                title="Possible SQL injection",
+                title="SQL injection from unsafe query construction",
                 severity="Critical",
                 explanation="The query appears to build SQL with string interpolation or concatenation.",
                 suggested_fix="Use parameterized queries instead of building SQL strings from user input.",
@@ -508,6 +762,33 @@ def _fallback_review(payload: ReviewRequest, reason: str | None = None) -> Revie
 
     if re.search(r"(password|api[_-]?key|secret|token)", code_lower):
         test_cases.append("Test that secrets are loaded from environment variables and never returned in logs.")
+
+    if _has_unsafe_sql_construction(code_lower):
+        test_cases.append("Test malicious SQL input such as quoted OR conditions and verify parameterized queries are used.")
+
+    if _has_raw_card_handling(code_lower):
+        test_cases.append("Test payment flow with tokenized card data and verify raw card numbers are never stored or logged.")
+
+    if _has_unsafe_path_construction(code_lower):
+        test_cases.append("Test filenames containing ../ path traversal and verify writes stay inside the allowed upload directory.")
+
+    if _has_requests_post(code_lower):
+        test_cases.append("Test external API timeout, connection error, and non-2xx response handling.")
+
+    if _has_missing_transaction_rollback(code_lower):
+        test_cases.append("Test a failure in the second database write and verify the full transaction is rolled back.")
+
+    if _has_db_connection_without_close(code_lower):
+        test_cases.append("Test early returns and exceptions to verify database connections are always closed.")
+
+    if _has_datetime_json_risk(code_lower):
+        test_cases.append("Test JSON export with datetime values and verify created_at is serialized as an ISO string.")
+
+    if _has_unchecked_fetchone(code_lower):
+        test_cases.append("Test a missing database row and verify the code handles fetchone returning None.")
+
+    if _has_negative_payment_amount(code_lower):
+        test_cases.append("Test negative refund and payment amounts and verify the request is rejected before processing.")
 
     risk_score = min(risk_score, 100)
     summary = (
@@ -576,13 +857,20 @@ Do not use markdown.
 Use null for fixed_code unless the fix is short and can be represented as a valid escaped JSON string.
 Do not put raw line breaks inside JSON string values.
 Risk score must match issue severity:
-- Critical issue: risk_score must be at least 70.
+- Critical issue: risk_score must be at least 80.
 - High issue: risk_score must be at least 50.
 - Medium issue: risk_score must be at least 30.
 - Only Low issues: risk_score should usually be between 10 and 25.
+If multiple Critical issues exist, risk_score should usually be 95-100.
+If SQL injection appears with payment secrets or raw card handling, risk_score should be 100.
 Do not give Low risk when Critical or High issues exist.
 Mark issues as Critical only for crashes, data loss, security risks, or serious runtime failures.
 Mention business logic issues separately from runtime bugs.
+Look specifically for payment/card handling, SQL injection, path traversal, missing request timeouts,
+missing request exception handling, missing DB rollback, unclosed DB connections, fetchone None checks,
+datetime JSON serialization, and negative refund/payment amounts when relevant.
+Avoid duplicate findings. If two issues describe the same root cause, return one stronger finding.
+Prefer specific test cases over generic test ideas.
 Keep fixed code practical and not overcomplicated.
 Your JSON must match this structure:
 {

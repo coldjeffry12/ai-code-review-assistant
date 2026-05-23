@@ -84,3 +84,23 @@ def test_html_strings_do_not_trigger_arithmetic_suggestion(monkeypatch):
     suggestions = " ".join(body["improvements"]).lower()
     assert response.status_code == 200
     assert "arithmetic edge cases" not in suggestions
+
+
+def test_url_strings_do_not_trigger_arithmetic_suggestion(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    response = client.post(
+        "/api/review",
+        json={
+            "language": "Python",
+            "code": 'import requests\nresponse = requests.post("https://api.example.com/refund", json=payload)',
+            "focus": "bugs, reliability",
+        },
+    )
+    body = response.json()
+
+    suggestions = " ".join(body["improvements"]).lower()
+    test_cases = " ".join(body["test_cases"]).lower()
+    assert response.status_code == 200
+    assert "arithmetic edge cases" not in suggestions
+    assert "division or arithmetic" not in test_cases
