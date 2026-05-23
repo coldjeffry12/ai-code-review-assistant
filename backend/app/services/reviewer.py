@@ -570,6 +570,9 @@ def _normalize_review_response(
 ) -> ReviewResponse:
     code_lower = (code or "").lower()
     selected_language_value, detected_language_value, reviewed_language_value = _language_metadata(selected_language, code)
+    if review.used_ai and review.detected_language:
+        detected_language_value = review.detected_language
+        reviewed_language_value = review.reviewed_language or review.detected_language
     normalized_bugs: list[BugFinding] = []
 
     for bug in review.bugs:
@@ -1346,6 +1349,8 @@ def _review_from_ai_json(parsed: Dict[str, Any], payload: ReviewRequest | None =
     fixed_code = parsed.get("fixed_code")
     if fixed_code is not None:
         fixed_code = str(fixed_code).strip() or None
+    detected_language = str(parsed.get("detected_language") or "").strip() or None
+    reviewed_language = str(parsed.get("reviewed_language") or detected_language or "").strip() or None
 
     return _normalize_review_response(ReviewResponse(
         summary=str(parsed.get("summary") or "AI review completed.").strip(),
@@ -1356,6 +1361,8 @@ def _review_from_ai_json(parsed: Dict[str, Any], payload: ReviewRequest | None =
         fixed_code=fixed_code,
         used_ai=True,
         review_source="ai",
+        detected_language=detected_language,
+        reviewed_language=reviewed_language,
     ), payload.language if payload else None, payload.code if payload else None)
 
 
@@ -1414,6 +1421,8 @@ Do not use markdown.
 Always set fixed_code to null.
 Do not return corrected code blocks.
 Do not put raw line breaks inside JSON string values.
+Detect the pasted code language yourself and return it in detected_language.
+Set reviewed_language to the language you actually used for the review.
 This is defensive code review for a portfolio app. The user is asking to find and fix vulnerabilities,
 not to exploit them. Do not provide executable attack steps.
 Risk score must match issue severity:
@@ -1446,6 +1455,8 @@ Keep fixed code practical and not overcomplicated.
 Your JSON must match this structure:
 {
   "summary": "short summary",
+  "detected_language": "language detected from the pasted code",
+  "reviewed_language": "language used for the review",
   "risk_score": 0,
   "bugs": [
     {

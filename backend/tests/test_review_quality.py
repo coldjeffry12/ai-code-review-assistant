@@ -11,6 +11,7 @@ from app.services.reviewer import (
     _fallback_review,
     _merge_safety_checks,
     _normalize_review_response,
+    _review_from_ai_json,
     review_code,
 )
 
@@ -313,6 +314,57 @@ const app = express();
 app.post('/login', (req, res) => res.json({ token: jwt.sign({ id: 1 }, 'secret') }));"""
 
     assert _detected_review_language("Auto", code) == "JavaScript"
+
+
+def test_ai_json_language_detection_is_used_in_response():
+    review = _review_from_ai_json(
+        {
+            "summary": "AI detected Ruby and reviewed the Sinatra code.",
+            "detected_language": "Ruby",
+            "reviewed_language": "Ruby",
+            "risk_score": 80,
+            "bugs": [
+                {
+                    "title": "SQL injection",
+                    "severity": "Critical",
+                    "explanation": "The SQL query interpolates user input.",
+                    "suggested_fix": "Use parameterized queries.",
+                }
+            ],
+            "improvements": ["Use safer database access patterns."],
+            "test_cases": ["Test SQL injection payloads are rejected."],
+            "fixed_code": None,
+        },
+        ReviewRequest(
+            code='require "sinatra"\npost "/login" do\nend',
+            focus="security",
+        ),
+    )
+
+    assert review.used_ai is True
+    assert review.detected_language == "Ruby"
+    assert review.reviewed_language == "Ruby"
+
+
+def test_ai_language_detection_overrides_local_hint():
+    review = _normalize_review_response(
+        ReviewResponse(
+            summary="AI detected a custom language.",
+            risk_score=30,
+            bugs=[],
+            improvements=["Review syntax manually."],
+            test_cases=["Test the main flow."],
+            fixed_code=None,
+            used_ai=True,
+            detected_language="Ruby",
+            reviewed_language="Ruby",
+        ),
+        selected_language="Auto",
+        code="const express = require('express');",
+    )
+
+    assert review.detected_language == "Ruby"
+    assert review.reviewed_language == "Ruby"
 
 
 def test_safe_retry_prompt_redacts_dangerous_literals():
