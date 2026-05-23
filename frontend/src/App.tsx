@@ -162,7 +162,7 @@ function App() {
           {loading && (
             <div className="emptyState">
               <p>Running review...</p>
-              <span>Free AI review can take 10-30 seconds. Repeated identical code returns from cache.</span>
+              <span>AI detects the language first, then reviews the code. Large files can take up to a minute; repeated identical code returns from cache.</span>
             </div>
           )}
 

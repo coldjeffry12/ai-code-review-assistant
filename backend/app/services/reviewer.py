@@ -48,6 +48,7 @@ _LANGUAGE_ALIASES = {
     "c++": "C++",
     "cpp": "C++",
     "css": "CSS",
+    "crystal": "Crystal",
     "elixir": "Elixir",
     "go": "Go",
     "golang": "Go",
@@ -162,6 +163,8 @@ def _is_auto_language(language: str | None) -> bool:
 
 
 def _code_looks_like_ruby(code_lower: str) -> bool:
+    if _code_looks_like_crystal(code_lower):
+        return False
     return bool(
         re.search(r"^\s*require\s+['\"](?:sinatra|sqlite3|json|yaml|net/http|uri|fileutils)['\"]", code_lower, re.MULTILINE)
         or re.search(r"^\s*(get|post|put|patch|delete)\s+['\"][^'\"]+['\"]\s+do\b", code_lower, re.MULTILINE)
@@ -169,6 +172,18 @@ def _code_looks_like_ruby(code_lower: str) -> bool:
         or "net::http" in code_lower
         or "fileutils" in code_lower
         or "yaml.load" in code_lower
+    )
+
+
+def _code_looks_like_crystal(code_lower: str) -> bool:
+    return bool(
+        re.search(r"^\s*require\s+['\"](?:kemal|http/client|file_utils)['\"]", code_lower, re.MULTILINE)
+        or re.search(r"\bdo\s+\|env\|", code_lower)
+        or re.search(r"\.as_[sifb]\b", code_lower)
+        or "kemal.run" in code_lower
+        or "http::client" in code_lower
+        or "fileutils.mkdir_p" in code_lower
+        or "time.utc" in code_lower
     )
 
 
@@ -216,6 +231,8 @@ def _detected_review_language(selected_language: str, code: str) -> str:
     selected = selected_language.strip() or "Plain Text"
     normalized_selected = selected.lower()
 
+    if _code_looks_like_crystal(code_lower):
+        return "Crystal"
     if _code_looks_like_ruby(code_lower):
         return "Ruby"
     if _code_looks_like_elixir(code_lower):
@@ -255,6 +272,15 @@ def _safe_exception_summary(exc: Exception) -> str:
     return message
 
 
+def _should_skip_ai_retry(exc: Exception) -> bool:
+    error_type = exc.__class__.__name__.lower()
+    message = str(exc).lower()
+    return any(
+        marker in error_type or marker in message
+        for marker in ["timeout", "ratelimit", "rate limit", "429", "quota", "insufficient_quota"]
+    )
+
+
 def _int_env(name: str, default: int, min_value: int, max_value: int) -> int:
     try:
         value = int(os.getenv(name, str(default)))
@@ -276,6 +302,17 @@ def _cache_key(payload: ReviewRequest) -> str:
 
 def _normalize_code_for_similarity(code: str) -> str:
     return re.sub(r"\s+", " ", code.strip())
+
+
+def _code_sample_for_language_detection(code: str, max_lines: int = 120, max_chars: int = 6000) -> str:
+    lines = code.splitlines()
+    if len(lines) <= max_lines and len(code) <= max_chars:
+        return code
+
+    head_count = max_lines // 2
+    tail_count = max_lines - head_count
+    sampled = "\n".join(lines[:head_count] + ["... middle omitted for language detection ..."] + lines[-tail_count:])
+    return sampled[:max_chars]
 
 
 def _clone_response(response: ReviewResponse) -> ReviewResponse:
@@ -302,7 +339,7 @@ def _canonical_language_name(value: str | None) -> str | None:
 
 
 def _language_from_ai_summary(summary: str) -> str | None:
-    language_pattern = r"(elixir|python|ruby|javascript|typescript|node\.js|java|c\+\+|c#|sql|go|rust|php|kotlin|swift|bash|nim)"
+    language_pattern = r"(crystal|elixir|python|ruby|javascript|typescript|node\.js|java|c\+\+|c#|sql|go|rust|php|kotlin|swift|bash|nim)"
     summary_lower = summary.lower()
     patterns = [
         rf"\b(?:the|this|provided|pasted)\s+{language_pattern}\s+code\b",
@@ -506,16 +543,18 @@ Code:
 
 
 def _ai_language_detection_prompt(code: str) -> str:
+    sample = _code_sample_for_language_detection(code)
     return f"""
 Detect the main programming language of this pasted code.
 Return only JSON.
 Do not review vulnerabilities in this step.
 If application code contains SQL strings, return the application language, not SQL.
 Return SQL only if the pasted code is primarily standalone SQL.
+This is a short sample from the pasted code when the full input is large.
 
 Code:
 ```text
-{code}
+{sample}
 ```
 """
 
@@ -1549,7 +1588,7 @@ async def review_code(payload: ReviewRequest) -> ReviewResponse:
         _store_review(payload, fallback_review)
         return fallback_review
 
-    timeout = float(os.getenv("OPENAI_TIMEOUT_SECONDS", "90" if is_ollama else "60"))
+    timeout = float(os.getenv("OPENAI_TIMEOUT_SECONDS", "90" if is_ollama else "45"))
     client_options: dict[str, Any] = {"api_key": api_key, "timeout": timeout}
     if base_url:
         client_options["base_url"] = base_url
@@ -1573,7 +1612,8 @@ Detect the pasted code language yourself and return it in detected_language.
 Set reviewed_language to the language you actually used for the review.
 Do not copy any local/default language hint when manual language selection is not used.
 Use syntax evidence for language detection: defmodule/do/end/Postgrex/Jason is Elixir;
-require "sinatra" with do/end is Ruby; import jester/proc/routes/when isMainModule is Nim;
+require "sinatra" with do/end is Ruby; require "kemal"/do |env|/.as_s/Kemal.run is Crystal;
+import jester/proc/routes/when isMainModule is Nim;
 require('express') or app.post(...) is JavaScript/Node.js.
 SQL keywords inside strings are a SQL injection risk, but they do not make the whole pasted code SQL.
 This is defensive code review for a portfolio app. The user is asking to find and fix vulnerabilities,
@@ -1604,6 +1644,11 @@ raw err.message responses, and fs.writeFileSync inside routes.
 child_process.exec is asynchronous; the security issue is shell command injection, not synchronous blocking.
 Avoid duplicate findings. If two issues describe the same root cause, return one stronger finding.
 Prefer specific test cases over generic test ideas.
+Keep the response concise enough for a web UI:
+- Return at most 8 strongest bug findings.
+- Return at most 8 improvements.
+- Return at most 8 test cases.
+- Keep each explanation and suggested_fix under 80 words.
 Keep fixed code practical and not overcomplicated.
 Your JSON must match this structure:
 {
@@ -1640,7 +1685,11 @@ Your JSON must match this structure:
 }
 """
 
-    def completion_options_for(user_prompt: str, active_system_prompt: str = system_prompt) -> dict[str, Any]:
+    def completion_options_for(
+        user_prompt: str,
+        active_system_prompt: str = system_prompt,
+        max_tokens: int | None = None,
+    ) -> dict[str, Any]:
         options: dict[str, Any] = {
             "model": model,
             "messages": [
@@ -1655,15 +1704,21 @@ Your JSON must match this structure:
             options["extra_body"] = {
                 "options": {
                     "num_ctx": _int_env("OLLAMA_NUM_CTX", 512, 256, 8192),
-                    "num_predict": _int_env("OLLAMA_NUM_PREDICT", 512, 128, 8192),
+                    "num_predict": max_tokens or _int_env("OLLAMA_NUM_PREDICT", 512, 128, 8192),
                 }
             }
+        elif max_tokens:
+            options["max_tokens"] = max_tokens
         return options
 
     async def run_ai_language_detection() -> str:
         completion = await asyncio.to_thread(
             client.chat.completions.create,
-            **completion_options_for(_ai_language_detection_prompt(payload.code), language_detection_system_prompt),
+            **completion_options_for(
+                _ai_language_detection_prompt(payload.code),
+                language_detection_system_prompt,
+                max_tokens=_int_env("OPENAI_LANGUAGE_DETECTION_MAX_TOKENS", 120, 40, 300),
+            ),
         )
 
         content = completion.choices[0].message.content or "{}"
@@ -1676,7 +1731,10 @@ Your JSON must match this structure:
     async def run_ai_review(user_prompt: str, detected_language: str | None = None) -> ReviewResponse:
         completion = await asyncio.to_thread(
             client.chat.completions.create,
-            **completion_options_for(user_prompt),
+            **completion_options_for(
+                user_prompt,
+                max_tokens=_int_env("OPENAI_REVIEW_MAX_TOKENS", 2200, 800, 6000),
+            ),
         )
 
         content = completion.choices[0].message.content or "{}"
@@ -1722,6 +1780,8 @@ Your JSON must match this structure:
                 first_exc.__class__.__name__,
                 _safe_exception_summary(first_exc),
             )
+            if _should_skip_ai_retry(first_exc):
+                raise
             try:
                 ai_review = await run_ai_review(safe_review_prompt, ai_detected_language)
             except Exception as retry_exc:
@@ -1730,6 +1790,8 @@ Your JSON must match this structure:
                     retry_exc.__class__.__name__,
                     _safe_exception_summary(retry_exc),
                 )
+                if _should_skip_ai_retry(retry_exc):
+                    raise
                 ai_review = await run_ai_review(_ai_local_findings_prompt(payload, safety_review), ai_detected_language)
                 ai_review.review_source = "ai_from_local_findings"
         review = _merge_safety_checks(ai_review, safety_review, payload.language, payload.code)

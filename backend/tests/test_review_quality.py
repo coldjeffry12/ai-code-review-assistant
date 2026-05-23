@@ -4,8 +4,10 @@ import json
 from app.schemas import BugFinding, ReviewRequest, ReviewResponse
 from app.services.reviewer import (
     _ai_local_findings_prompt,
+    _ai_language_detection_prompt,
     _ai_user_prompt,
     _bug_category,
+    _code_sample_for_language_detection,
     _clear_review_cache,
     _detected_review_language,
     _fallback_review,
@@ -360,6 +362,41 @@ when isMainModule:
   runForever()"""
 
     assert _detected_review_language("Auto", code) == "Nim"
+
+
+def test_crystal_kemal_code_auto_detects_crystal_not_ruby_or_sql():
+    code = """require "kemal"
+require "sqlite3"
+require "json"
+require "http/client"
+
+post "/login" do |env|
+  body = JSON.parse(env.request.body.not_nil!.gets_to_end)
+  email = body["email"].as_s
+  query = "SELECT id FROM users WHERE email = '#{email}'"
+  result = database.query_one(query, as: {Int64})
+end
+
+Kemal.run"""
+
+    assert _detected_review_language("Auto", code) == "Crystal"
+
+
+def test_language_detection_prompt_uses_short_sample_for_large_code():
+    code = "\n".join([f"line_{index}" for index in range(400)])
+    prompt = _ai_language_detection_prompt(code)
+
+    assert len(prompt) < len(code) + 800
+    assert "middle omitted for language detection" in prompt
+
+
+def test_code_sample_for_language_detection_keeps_head_and_tail():
+    code = "\n".join([f"line_{index}" for index in range(200)])
+    sample = _code_sample_for_language_detection(code, max_lines=20, max_chars=1000)
+
+    assert "line_0" in sample
+    assert "line_199" in sample
+    assert "middle omitted for language detection" in sample
 
 
 def test_auto_ai_prompt_does_not_send_local_detected_language_hint():
