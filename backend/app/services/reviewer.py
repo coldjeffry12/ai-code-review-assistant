@@ -201,6 +201,15 @@ def _clone_response(response: ReviewResponse) -> ReviewResponse:
     return response.model_copy(deep=True)
 
 
+def _language_metadata(selected_language: str | None, code: str | None) -> tuple[str | None, str | None, str | None]:
+    if not selected_language:
+        return None, None, None
+
+    selected = selected_language.strip()
+    detected = _detected_review_language(selected, code or "")
+    return selected, detected, detected
+
+
 def _cached_response(payload: ReviewRequest) -> ReviewResponse | None:
     entry = _REVIEW_CACHE.get(_cache_key(payload))
     if not entry:
@@ -531,6 +540,7 @@ def _normalize_review_response(
     code: str | None = None,
 ) -> ReviewResponse:
     code_lower = (code or "").lower()
+    selected_language_value, detected_language_value, reviewed_language_value = _language_metadata(selected_language, code)
     normalized_bugs: list[BugFinding] = []
 
     for bug in review.bugs:
@@ -578,6 +588,9 @@ def _normalize_review_response(
         fixed_code=review.fixed_code,
         used_ai=review.used_ai,
         review_source=review.review_source,
+        selected_language=selected_language_value or review.selected_language,
+        detected_language=detected_language_value or review.detected_language,
+        reviewed_language=reviewed_language_value or review.reviewed_language,
         cache_hit=review.cache_hit,
         similarity_used=review.similarity_used,
     )

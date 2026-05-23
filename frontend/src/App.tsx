@@ -42,6 +42,14 @@ function getReviewSourceLabel(result: ReviewResponse) {
   return result.used_ai ? 'AI review' : 'Fallback review'
 }
 
+function getLanguageRows(result: ReviewResponse) {
+  return [
+    ['Selected', result.selected_language],
+    ['Detected', result.detected_language],
+    ['Reviewed as', result.reviewed_language],
+  ].filter((row): row is [string, string] => Boolean(row[1]))
+}
+
 function App() {
   const [theme, setTheme] = useState<Theme>(getInitialTheme)
   const [language, setLanguage] = useState('Python')
@@ -171,6 +179,16 @@ function App() {
 
               <section className="resultSection">
                 <h3>Summary</h3>
+                {getLanguageRows(result).length > 0 && (
+                  <dl className="languageMeta" aria-label="Review language details">
+                    {getLanguageRows(result).map(([label, value]) => (
+                      <div key={label}>
+                        <dt>{label}</dt>
+                        <dd>{value}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                )}
                 <p>{result.summary}</p>
                 {result.cache_hit && (
                   <p className="resultNote">Returned instantly from cache because the language, focus, and code matched a previous review.</p>

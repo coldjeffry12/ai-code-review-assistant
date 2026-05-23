@@ -362,6 +362,35 @@ button:disabled {
   font-size: 17px;
 }
 
+.languageMeta {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0 0 12px;
+}
+
+.languageMeta div {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  background: var(--panel-subtle);
+}
+
+.languageMeta dt {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  margin: 0 0 4px;
+}
+
+.languageMeta dd {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
 .resultSection p {
   line-height: 1.6;
   margin: 8px 0;
@@ -454,5 +483,9 @@ pre {
 
   .buttonRow {
     flex-direction: column;
+  }
+
+  .languageMeta {
+    grid-template-columns: 1fr;
   }
 }

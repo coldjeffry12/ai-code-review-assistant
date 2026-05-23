@@ -221,6 +221,24 @@ def test_ai_prompt_uses_detected_language_when_selection_is_wrong():
     assert "```Java" in prompt
 
 
+def test_review_response_reports_selected_detected_and_reviewed_language():
+    review = _fallback_review(
+        ReviewRequest(
+            language="Python",
+            code="""public class Demo {
+    public static void main(String[] args) {
+        System.out.println("hello");
+    }
+}""",
+            focus="bugs",
+        )
+    )
+
+    assert review.selected_language == "Python"
+    assert review.detected_language == "Java"
+    assert review.reviewed_language == "Java"
+
+
 def test_safe_retry_prompt_redacts_dangerous_literals():
     payload = ReviewRequest(
         language="Java",

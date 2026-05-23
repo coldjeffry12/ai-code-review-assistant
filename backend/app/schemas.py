@@ -28,5 +28,8 @@ class ReviewResponse(BaseModel):
     fixed_code: Optional[str] = None
     used_ai: bool
     review_source: str = "fallback"
+    selected_language: Optional[str] = None
+    detected_language: Optional[str] = None
+    reviewed_language: Optional[str] = None
     cache_hit: bool = False
     similarity_used: Optional[float] = None

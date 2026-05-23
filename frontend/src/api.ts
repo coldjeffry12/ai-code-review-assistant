@@ -14,6 +14,9 @@ export type ReviewResponse = {
   fixed_code?: string | null
   used_ai: boolean
   review_source: string
+  selected_language?: string | null
+  detected_language?: string | null
+  reviewed_language?: string | null
   cache_hit: boolean
   similarity_used?: number | null
 }
