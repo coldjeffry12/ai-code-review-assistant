@@ -26,6 +26,7 @@ export type ReviewRequest = {
   language?: string
   code: string
   focus: string
+  code_encoding?: string
 }
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000').replace(/\/$/, '')
@@ -50,12 +51,18 @@ async function getErrorMessage(response: Response) {
 }
 
 export async function reviewCode(payload: ReviewRequest): Promise<ReviewResponse> {
+  const encodedPayload = {
+    ...payload,
+    code: encodeBase64Utf8(payload.code),
+    code_encoding: 'base64',
+  }
+
   const response = await fetch(`${API_BASE_URL}/api/review`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify(payload),
+    body: JSON.stringify(encodedPayload),
   })
 
   if (!response.ok) {
@@ -63,4 +70,13 @@ export async function reviewCode(payload: ReviewRequest): Promise<ReviewResponse
   }
 
   return response.json()
+}
+
+function encodeBase64Utf8(value: string) {
+  const bytes = new TextEncoder().encode(value)
+  let binary = ''
+  bytes.forEach((byte) => {
+    binary += String.fromCharCode(byte)
+  })
+  return btoa(binary)
 }

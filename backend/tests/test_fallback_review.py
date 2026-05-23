@@ -1,3 +1,5 @@
+import base64
+
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -30,6 +32,25 @@ def test_review_works_without_openai_api_key(monkeypatch):
     assert body["used_ai"] is False
     assert body["risk_score"] > 0
     assert body["bugs"]
+
+
+def test_review_accepts_base64_encoded_code(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    code = "def divide(a, b):\n    return a / b\nprint(divide(10, 0))"
+
+    response = client.post(
+        "/api/review",
+        json={
+            "code": base64.b64encode(code.encode("utf-8")).decode("ascii"),
+            "code_encoding": "base64",
+            "focus": "bugs, security",
+        },
+    )
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["used_ai"] is False
+    assert any("division by zero" in bug["title"].lower() for bug in body["bugs"])
 
 
 def test_hardcoded_password_gets_detected(monkeypatch):
