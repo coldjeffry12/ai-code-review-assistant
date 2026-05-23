@@ -23,6 +23,10 @@ The live demo is configured for optional free AI through an OpenAI-compatible pr
 
 For free local AI review, run an open-source model with Ollama and point the backend to `http://localhost:11434/v1`. See [docs/free-local-ai.md](docs/free-local-ai.md).
 
+## End-to-End Project Documentation
+
+The full start-to-finish build story is documented in [docs/project-journey.md](docs/project-journey.md). It explains the original goal, architecture decisions, fallback review logic, AI integration, testing, screenshots, GitHub preparation, Render/Vercel deployment, what broke, and the final project status.
+
 ## Tech Stack
 
 Frontend:
@@ -75,6 +79,9 @@ ai-code-review-assistant/
 |-- docs/
 |   |-- ai-workflow.md
 |   |-- architecture.md
+|   |-- deployment.md
+|   |-- free-local-ai.md
+|   |-- project-journey.md
 |   |-- test-cases.md
 |   `-- what-broke-and-what-i-learned.md
 |-- screenshots/
