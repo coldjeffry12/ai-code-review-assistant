@@ -1,5 +1,14 @@
+import asyncio
+
 from app.schemas import BugFinding, ReviewRequest, ReviewResponse
-from app.services.reviewer import _bug_category, _fallback_review, _merge_safety_checks, _normalize_review_response
+from app.services.reviewer import (
+    _bug_category,
+    _clear_review_cache,
+    _fallback_review,
+    _merge_safety_checks,
+    _normalize_review_response,
+    review_code,
+)
 
 
 def _review_with_bug(severity: str, risk_score: int = 15) -> ReviewResponse:
@@ -49,6 +58,39 @@ def test_fallback_placeholder_is_not_merged_with_real_ai_bugs():
     assert "No critical issue detected by fallback engine" not in titles
     assert any("critical test issue" in title.lower() for title in titles)
     assert merged.risk_score >= 70
+
+
+def test_ai_failure_uses_clean_fallback_summary(monkeypatch):
+    class FailingCompletions:
+        def create(self, **kwargs):
+            raise ValueError("invalid json")
+
+    class FailingChat:
+        completions = FailingCompletions()
+
+    class FailingClient:
+        def __init__(self, **kwargs):
+            self.chat = FailingChat()
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr("app.services.reviewer.OpenAI", FailingClient)
+    _clear_review_cache()
+
+    review = asyncio.run(
+        review_code(
+            ReviewRequest(
+                language="Python",
+                code='API_KEY = "demo"\nquery = "SELECT * FROM users WHERE id = " + user_id',
+                focus="bugs, security",
+            )
+        )
+    )
+
+    assert review.used_ai is False
+    assert review.review_source == "fallback_after_ai_error"
+    assert "invalid json" not in review.summary.lower()
+    assert "ai review was unavailable" not in review.summary.lower()
+    assert "fallback review completed for python" in review.summary.lower()
 
 
 def test_duplicate_test_cases_are_removed():

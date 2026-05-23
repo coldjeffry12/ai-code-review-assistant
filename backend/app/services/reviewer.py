@@ -259,6 +259,19 @@ def _clear_review_cache() -> None:
     _REVIEW_CACHE.clear()
 
 
+def _apply_similar_cache_metadata(review: ReviewResponse, similar_cached_review: dict[str, Any] | None) -> ReviewResponse:
+    if similar_cached_review:
+        review.review_source = f"{review.review_source}_with_cache_context"
+        review.similarity_used = similar_cached_review["similarity"]
+    return review
+
+
+def _fallback_after_ai_error(payload: ReviewRequest, similar_cached_review: dict[str, Any] | None = None) -> ReviewResponse:
+    review = _fallback_review(payload)
+    review.review_source = "fallback_after_ai_error"
+    return _apply_similar_cache_metadata(review, similar_cached_review)
+
+
 def _bug_findings(value: Any) -> list[BugFinding]:
     findings: list[BugFinding] = []
     if isinstance(value, list):
@@ -1207,13 +1220,11 @@ async def review_code(payload: ReviewRequest) -> ReviewResponse:
 
     if not api_key:
         fallback_review = _fallback_review(payload, "Fallback review completed because OPENAI_API_KEY is not configured.")
-        if similar_cached_review:
-            fallback_review.review_source = "fallback_with_cache_context"
-            fallback_review.similarity_used = similar_cached_review["similarity"]
+        _apply_similar_cache_metadata(fallback_review, similar_cached_review)
         _store_review(payload, fallback_review)
         return fallback_review
 
-    timeout = float(os.getenv("OPENAI_TIMEOUT_SECONDS", "90" if is_ollama else "30"))
+    timeout = float(os.getenv("OPENAI_TIMEOUT_SECONDS", "90" if is_ollama else "60"))
     client_options: dict[str, Any] = {"api_key": api_key, "timeout": timeout}
     if base_url:
         client_options["base_url"] = base_url
@@ -1238,6 +1249,7 @@ Mark issues as Critical only for crashes, data loss, security risks, or serious 
 Mention business logic issues separately from runtime bugs.
 Do not mark a Node.js/Express codebase as a language mismatch when JavaScript is selected.
 If the selected language appears wrong, mention it only as a Low note, not a Critical bug.
+If the selected language and pasted code do not match, still review the actual code shown.
 Look specifically for payment/card handling, SQL injection, path traversal, missing request timeouts,
 missing request exception handling, missing DB rollback, unclosed DB connections, fetchone None checks,
 datetime JSON serialization, and negative refund/payment amounts when relevant.
@@ -1317,12 +1329,6 @@ Code:
         _store_review(payload, review)
         return review
     except Exception:
-        fallback_review = _fallback_review(
-            payload,
-            "AI review was unavailable or returned invalid JSON, so the backend used the fallback review engine.",
-        )
-        if similar_cached_review:
-            fallback_review.review_source = "fallback_with_cache_context"
-            fallback_review.similarity_used = similar_cached_review["similarity"]
+        fallback_review = _fallback_after_ai_error(payload, similar_cached_review)
         _store_review(payload, fallback_review)
         return fallback_review
