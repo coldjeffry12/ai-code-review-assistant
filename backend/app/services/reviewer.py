@@ -133,6 +133,34 @@ def _selected_language_matches_code(language: str | None, code_lower: str) -> bo
     return False
 
 
+def _detected_review_language(selected_language: str, code: str) -> str:
+    code_lower = code.lower()
+    selected = selected_language.strip() or "Plain Text"
+    normalized_selected = selected.lower()
+
+    if _code_looks_like_node_js(code_lower):
+        return "JavaScript"
+    if re.search(r"\b(public|private|protected)\s+class\b|\bsystem\.out\.println\b|\bstring\[\]\s+args\b|\.getbytes\s*\(", code_lower):
+        return "Java"
+    if re.search(r"#include\s*<|std::|->\w+\s*\(|\bnullptr\b", code_lower):
+        return "C++"
+    if re.search(r"\binterface\s+\w+|\btype\s+\w+\s*=|:\s*(string|number|boolean)\b", code_lower) and normalized_selected in {"typescript", "ts", "react"}:
+        return "TypeScript"
+    if re.search(r"\b(select|insert|update|delete)\b", code_lower) and "def " not in code_lower and "function " not in code_lower:
+        return "SQL"
+    if re.search(r"^\s*def\s+\w+\s*\(|^\s*import\s+\w+|^\s*from\s+\w+\s+import", code_lower, re.MULTILINE):
+        return "Python"
+    if _is_javascript_language(selected):
+        return "JavaScript"
+    return selected
+
+
+def _redact_for_ai_retry(code: str) -> str:
+    redacted = re.sub(r"rm\s+-rf\s+[^\"'\n;)]+", "[dangerous shell command omitted]", code, flags=re.IGNORECASE)
+    redacted = re.sub(r"(?i)(password|api[_-]?key|secret|token|admin[_-]?key)\s*=\s*([\"']).*?\2", r"\1 = \"[redacted-demo-secret]\"", redacted)
+    return redacted
+
+
 def _int_env(name: str, default: int, min_value: int, max_value: int) -> int:
     try:
         value = int(os.getenv(name, str(default)))
@@ -270,6 +298,42 @@ def _fallback_after_ai_error(payload: ReviewRequest, similar_cached_review: dict
     review = _fallback_review(payload)
     review.review_source = "fallback_after_ai_error"
     return _apply_similar_cache_metadata(review, similar_cached_review)
+
+
+def _ai_user_prompt(payload: ReviewRequest, similar_cached_review: dict[str, Any] | None = None, retry_safe_mode: bool = False) -> str:
+    detected_language = _detected_review_language(payload.language, payload.code)
+    code_for_prompt = _redact_for_ai_retry(payload.code) if retry_safe_mode else payload.code
+    retry_instruction = ""
+    if retry_safe_mode:
+        retry_instruction = """
+This is a defensive review retry. Some dangerous string literals were redacted only to keep the AI request safe.
+Still review the code structure and identify likely security and reliability issues.
+Do not provide exploit steps or executable attack commands.
+"""
+
+    return f"""
+Review this code for a defensive software security/code quality audit.
+
+Selected language from UI:
+{payload.language}
+
+Detected code language:
+{detected_language}
+
+If selected language and detected language differ, review the actual pasted code using the detected language.
+Mention the language mismatch only as a Low note if it matters.
+
+Focus areas:
+{payload.focus}
+
+Code:
+```{detected_language}
+{code_for_prompt}
+```
+
+{retry_instruction}
+{_similar_review_context(similar_cached_review, payload.code)}
+"""
 
 
 def _bug_findings(value: Any) -> list[BugFinding]:
@@ -1236,6 +1300,8 @@ Return only valid JSON.
 Do not use markdown.
 Use null for fixed_code unless the fix is short and can be represented as a valid escaped JSON string.
 Do not put raw line breaks inside JSON string values.
+This is defensive code review for a portfolio app. The user is asking to find and fix vulnerabilities,
+not to exploit them. Do not provide executable attack steps.
 Risk score must match issue severity:
 - Critical issue: risk_score must be at least 80.
 - High issue: risk_score must be at least 50.
@@ -1280,47 +1346,41 @@ Your JSON must match this structure:
 }
 """
 
-    user_prompt = f"""
-Review this {payload.language} code.
-
-Focus areas:
-{payload.focus}
-
-Code:
-```{payload.language}
-{payload.code}
-```
-
-{_similar_review_context(similar_cached_review, payload.code)}
-"""
-
-    completion_options: dict[str, Any] = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system_prompt.strip()},
-            {"role": "user", "content": user_prompt.strip()},
-        ],
-        "response_format": {"type": "json_object"},
-        "temperature": 0.2,
-    }
-
-    if is_ollama:
-        completion_options["extra_body"] = {
-            "options": {
-                "num_ctx": _int_env("OLLAMA_NUM_CTX", 512, 256, 8192),
-                "num_predict": _int_env("OLLAMA_NUM_PREDICT", 128, 64, 4096),
-            }
+    def completion_options_for(user_prompt: str) -> dict[str, Any]:
+        options: dict[str, Any] = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_prompt.strip()},
+                {"role": "user", "content": user_prompt.strip()},
+            ],
+            "response_format": {"type": "json_object"},
+            "temperature": 0.2,
         }
 
-    try:
+        if is_ollama:
+            options["extra_body"] = {
+                "options": {
+                    "num_ctx": _int_env("OLLAMA_NUM_CTX", 512, 256, 8192),
+                    "num_predict": _int_env("OLLAMA_NUM_PREDICT", 512, 128, 8192),
+                }
+            }
+        return options
+
+    async def run_ai_review(user_prompt: str) -> ReviewResponse:
         completion = await asyncio.to_thread(
             client.chat.completions.create,
-            **completion_options,
+            **completion_options_for(user_prompt),
         )
 
         content = completion.choices[0].message.content or "{}"
         parsed = _safe_json_loads(content)
-        ai_review = _review_from_ai_json(parsed, payload)
+        return _review_from_ai_json(parsed, payload)
+
+    try:
+        try:
+            ai_review = await run_ai_review(_ai_user_prompt(payload, similar_cached_review))
+        except Exception:
+            ai_review = await run_ai_review(_ai_user_prompt(payload, similar_cached_review, retry_safe_mode=True))
         safety_review = _fallback_review(payload)
         review = _merge_safety_checks(ai_review, safety_review, payload.language, payload.code)
         if similar_cached_review:

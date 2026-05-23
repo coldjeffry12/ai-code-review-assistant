@@ -2,8 +2,10 @@ import asyncio
 
 from app.schemas import BugFinding, ReviewRequest, ReviewResponse
 from app.services.reviewer import (
+    _ai_user_prompt,
     _bug_category,
     _clear_review_cache,
+    _detected_review_language,
     _fallback_review,
     _merge_safety_checks,
     _normalize_review_response,
@@ -91,6 +93,39 @@ def test_ai_failure_uses_clean_fallback_summary(monkeypatch):
     assert "invalid json" not in review.summary.lower()
     assert "ai review was unavailable" not in review.summary.lower()
     assert "fallback review completed for python" in review.summary.lower()
+
+
+def test_ai_prompt_uses_detected_language_when_selection_is_wrong():
+    payload = ReviewRequest(
+        language="Python",
+        code="""public class LoanServiceTest {
+    public static void main(String[] args) {
+        System.out.println("demo");
+    }
+}""",
+        focus="bugs, security",
+    )
+
+    prompt = _ai_user_prompt(payload)
+
+    assert _detected_review_language(payload.language, payload.code) == "Java"
+    assert "Selected language from UI:\nPython" in prompt
+    assert "Detected code language:\nJava" in prompt
+    assert "```Java" in prompt
+
+
+def test_safe_retry_prompt_redacts_dangerous_literals():
+    payload = ReviewRequest(
+        language="Java",
+        code='service.backupDatabase("backup.sql; rm -rf important_folder");\nADMIN_KEY = "demo-admin-key";',
+        focus="security",
+    )
+
+    prompt = _ai_user_prompt(payload, retry_safe_mode=True)
+
+    assert "rm -rf important_folder" not in prompt
+    assert "[dangerous shell command omitted]" in prompt
+    assert "[redacted-demo-secret]" in prompt
 
 
 def test_duplicate_test_cases_are_removed():
