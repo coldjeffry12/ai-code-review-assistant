@@ -336,6 +336,38 @@ Code:
 """
 
 
+def _ai_local_findings_prompt(payload: ReviewRequest, safety_review: ReviewResponse) -> str:
+    detected_language = _detected_review_language(payload.language, payload.code)
+    bug_lines = [
+        f"- {bug.severity}: {bug.title}. {bug.explanation} Fix: {bug.suggested_fix}"
+        for bug in safety_review.bugs
+    ] or ["- No concrete local bug findings."]
+    improvement_lines = [f"- {item}" for item in safety_review.improvements] or ["- No local improvement notes."]
+    test_lines = [f"- {item}" for item in safety_review.test_cases] or ["- No local test ideas."]
+
+    return f"""
+The direct raw-code AI review failed, so complete a defensive AI review using this local static-analysis context.
+Do not claim you executed the code.
+Do not invent exploit steps.
+Use the findings below as evidence and improve the wording, severity consistency, summary, and test ideas.
+Return the same strict JSON structure.
+
+Selected language from UI: {payload.language}
+Detected code language: {detected_language}
+Code size: {len(payload.code.splitlines())} lines
+Focus areas: {payload.focus}
+
+Local safety findings:
+{chr(10).join(bug_lines)}
+
+Local improvement notes:
+{chr(10).join(improvement_lines)}
+
+Local test ideas:
+{chr(10).join(test_lines)}
+"""
+
+
 def _bug_findings(value: Any) -> list[BugFinding]:
     findings: list[BugFinding] = []
     if isinstance(value, list):
@@ -1376,13 +1408,20 @@ Your JSON must match this structure:
         parsed = _safe_json_loads(content)
         return _review_from_ai_json(parsed, payload)
 
+    safety_review = _fallback_review(payload)
+
     try:
         try:
             ai_review = await run_ai_review(_ai_user_prompt(payload, similar_cached_review))
         except Exception:
-            ai_review = await run_ai_review(_ai_user_prompt(payload, similar_cached_review, retry_safe_mode=True))
-        safety_review = _fallback_review(payload)
+            try:
+                ai_review = await run_ai_review(_ai_user_prompt(payload, similar_cached_review, retry_safe_mode=True))
+            except Exception:
+                ai_review = await run_ai_review(_ai_local_findings_prompt(payload, safety_review))
+                ai_review.review_source = "ai_from_local_findings"
         review = _merge_safety_checks(ai_review, safety_review, payload.language, payload.code)
+        if ai_review.review_source == "ai_from_local_findings":
+            review.review_source = "ai_from_local_findings"
         if similar_cached_review:
             review.review_source = "ai_with_cache_context"
             review.similarity_used = similar_cached_review["similarity"]

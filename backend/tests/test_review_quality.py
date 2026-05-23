@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 from app.schemas import BugFinding, ReviewRequest, ReviewResponse
 from app.services.reviewer import (
@@ -93,6 +94,70 @@ def test_ai_failure_uses_clean_fallback_summary(monkeypatch):
     assert "invalid json" not in review.summary.lower()
     assert "ai review was unavailable" not in review.summary.lower()
     assert "fallback review completed for python" in review.summary.lower()
+
+
+def test_ai_uses_local_findings_context_when_raw_code_attempts_fail(monkeypatch):
+    calls = {"count": 0, "prompts": []}
+
+    class FakeMessage:
+        content = json.dumps(
+            {
+                "summary": "AI review completed using local safety findings.",
+                "risk_score": 80,
+                "bugs": [
+                    {
+                        "title": "Hardcoded secret in source code",
+                        "severity": "High",
+                        "explanation": "A secret is stored directly in code.",
+                        "suggested_fix": "Move it to an environment variable.",
+                    }
+                ],
+                "improvements": ["Keep sensitive configuration outside source code."],
+                "test_cases": ["Test that secrets are loaded from environment variables."],
+                "fixed_code": None,
+            }
+        )
+
+    class FakeChoice:
+        message = FakeMessage()
+
+    class FakeCompletion:
+        choices = [FakeChoice()]
+
+    class FlakyCompletions:
+        def create(self, **kwargs):
+            calls["count"] += 1
+            calls["prompts"].append(kwargs["messages"][-1]["content"])
+            if calls["count"] < 3:
+                raise ValueError("raw review failed")
+            return FakeCompletion()
+
+    class FlakyChat:
+        completions = FlakyCompletions()
+
+    class FlakyClient:
+        def __init__(self, **kwargs):
+            self.chat = FlakyChat()
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr("app.services.reviewer.OpenAI", FlakyClient)
+    _clear_review_cache()
+
+    review = asyncio.run(
+        review_code(
+            ReviewRequest(
+                language="Java",
+                code='String adminPassword = "demo-admin-password";',
+                focus="bugs, security",
+            )
+        )
+    )
+
+    assert calls["count"] == 3
+    assert "Local safety findings:" in calls["prompts"][-1]
+    assert review.used_ai is True
+    assert review.review_source == "ai_from_local_findings"
+    assert "local safety findings" in review.summary.lower()
 
 
 def test_ai_prompt_uses_detected_language_when_selection_is_wrong():
