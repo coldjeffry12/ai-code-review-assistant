@@ -316,6 +316,34 @@ app.post('/login', (req, res) => res.json({ token: jwt.sign({ id: 1 }, 'secret')
     assert _detected_review_language("Auto", code) == "JavaScript"
 
 
+def test_elixir_code_auto_detects_elixir_not_python():
+    code = """defmodule HospitalBillingService do
+  @jwt_secret "demo-jwt-secret"
+
+  def login(email, password) do
+    query = "SELECT id FROM users WHERE email = '#{email}' AND password = '#{password}'"
+    Postgrex.query!(conn, query, [])
+  end
+end"""
+
+    assert _detected_review_language("Auto", code) == "Elixir"
+
+
+def test_auto_ai_prompt_does_not_send_local_detected_language_hint():
+    code = """defmodule HospitalBillingService do
+  def login(email, password) do
+    "SELECT id FROM users WHERE email = '#{email}' AND password = '#{password}'"
+  end
+end"""
+
+    prompt = _ai_user_prompt(ReviewRequest(code=code, focus="security"))
+
+    assert "Manual language selection:\nNot used. Detect the language from the pasted code." in prompt
+    assert "Detected code language:\nAI must detect this from the pasted code." in prompt
+    assert "```text" in prompt
+    assert "```Python" not in prompt
+
+
 def test_ai_json_language_detection_is_used_in_response():
     review = _review_from_ai_json(
         {
@@ -344,6 +372,35 @@ def test_ai_json_language_detection_is_used_in_response():
     assert review.used_ai is True
     assert review.detected_language == "Ruby"
     assert review.reviewed_language == "Ruby"
+
+
+def test_ai_summary_language_corrects_conflicting_detected_metadata():
+    review = _review_from_ai_json(
+        {
+            "summary": "The Elixir code contains critical SQL injection and command injection issues.",
+            "detected_language": "Python",
+            "reviewed_language": "Python",
+            "risk_score": 100,
+            "bugs": [
+                {
+                    "title": "SQL injection",
+                    "severity": "Critical",
+                    "explanation": "The SQL query interpolates user input.",
+                    "suggested_fix": "Use parameterized queries.",
+                }
+            ],
+            "improvements": ["Use Postgrex parameters."],
+            "test_cases": ["Test SQL injection payloads are rejected."],
+            "fixed_code": None,
+        },
+        ReviewRequest(
+            code='defmodule HospitalBillingService do\n  def login(email), do: email\nend',
+            focus="security",
+        ),
+    )
+
+    assert review.detected_language == "Elixir"
+    assert review.reviewed_language == "Elixir"
 
 
 def test_ai_language_detection_overrides_local_hint():

@@ -41,6 +41,34 @@ _NODE_MARKERS = (
     "router.post",
 )
 
+_LANGUAGE_ALIASES = {
+    "bash": "Bash",
+    "c": "C",
+    "c#": "C#",
+    "c++": "C++",
+    "cpp": "C++",
+    "css": "CSS",
+    "elixir": "Elixir",
+    "go": "Go",
+    "golang": "Go",
+    "html": "HTML",
+    "java": "Java",
+    "javascript": "JavaScript",
+    "js": "JavaScript",
+    "kotlin": "Kotlin",
+    "node": "JavaScript",
+    "node.js": "JavaScript",
+    "php": "PHP",
+    "python": "Python",
+    "py": "Python",
+    "ruby": "Ruby",
+    "rust": "Rust",
+    "sql": "SQL",
+    "swift": "Swift",
+    "typescript": "TypeScript",
+    "ts": "TypeScript",
+}
+
 
 def _cache_limit() -> int:
     return _int_env("REVIEW_CACHE_MAX_ENTRIES", 50, 1, 500)
@@ -143,6 +171,18 @@ def _code_looks_like_ruby(code_lower: str) -> bool:
     )
 
 
+def _code_looks_like_elixir(code_lower: str) -> bool:
+    return bool(
+        re.search(r"^\s*defmodule\s+\w+", code_lower, re.MULTILINE)
+        or re.search(r"^\s*@\w+\s+", code_lower, re.MULTILINE)
+        and " do\n" in code_lower
+        or "postgrex." in code_lower
+        or "jason.encode!" in code_lower
+        or "system.cmd" in code_lower
+        or "datetime.utc_now()" in code_lower
+    )
+
+
 def _code_looks_like_node_js(code_lower: str) -> bool:
     if _code_looks_like_ruby(code_lower):
         return False
@@ -164,6 +204,8 @@ def _detected_review_language(selected_language: str, code: str) -> str:
 
     if _code_looks_like_ruby(code_lower):
         return "Ruby"
+    if _code_looks_like_elixir(code_lower):
+        return "Elixir"
     if _code_looks_like_node_js(code_lower):
         return "JavaScript"
     if re.search(r"\b(public|private|protected)\s+class\b|\bsystem\.out\.println\b|\bstring\[\]\s+args\b|\.getbytes\s*\(", code_lower):
@@ -232,6 +274,46 @@ def _language_metadata(selected_language: str | None, code: str | None) -> tuple
     selected_for_display = None if selected.lower() in {"auto", "auto-detect", "autodetect"} else selected
     detected = _detected_review_language(selected, code or "")
     return selected_for_display, detected, detected
+
+
+def _canonical_language_name(value: str | None) -> str | None:
+    if not value:
+        return None
+
+    normalized = re.sub(r"\s+", " ", value.strip().lower())
+    normalized = normalized.replace("nodejs", "node.js")
+    return _LANGUAGE_ALIASES.get(normalized)
+
+
+def _language_from_ai_summary(summary: str) -> str | None:
+    language_pattern = r"(elixir|python|ruby|javascript|typescript|node\.js|java|c\+\+|c#|sql|go|rust|php|kotlin|swift|bash)"
+    summary_lower = summary.lower()
+    patterns = [
+        rf"\b(?:the|this|provided|pasted)\s+{language_pattern}\s+code\b",
+        rf"\bcode\s+(?:is|appears\s+to\s+be)\s+(?:written\s+in\s+)?{language_pattern}\b",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, summary_lower)
+        if match:
+            return _canonical_language_name(match.group(1))
+
+    return None
+
+
+def _ai_language_metadata(review: ReviewResponse) -> tuple[str | None, str | None]:
+    detected = _canonical_language_name(review.detected_language) or review.detected_language
+    reviewed = _canonical_language_name(review.reviewed_language) or review.reviewed_language
+    summary_language = _language_from_ai_summary(review.summary)
+
+    if summary_language and detected and _canonical_language_name(detected) != summary_language:
+        detected = summary_language
+        reviewed = summary_language
+    elif summary_language and not detected:
+        detected = summary_language
+        reviewed = reviewed or summary_language
+
+    return detected, reviewed or detected
 
 
 def _cached_response(payload: ReviewRequest) -> ReviewResponse | None:
@@ -347,7 +429,9 @@ def _fallback_after_ai_error(payload: ReviewRequest, similar_cached_review: dict
 
 
 def _ai_user_prompt(payload: ReviewRequest, similar_cached_review: dict[str, Any] | None = None, retry_safe_mode: bool = False) -> str:
-    detected_language = _detected_review_language(payload.language, payload.code)
+    local_detected_language = _detected_review_language(payload.language, payload.code)
+    prompt_detected_language = "AI must detect this from the pasted code." if _is_auto_language(payload.language) else local_detected_language
+    code_fence_language = "text" if _is_auto_language(payload.language) else local_detected_language
     code_for_prompt = _redact_for_ai_retry(payload.code) if retry_safe_mode else payload.code
     language_selection_note = (
         f"Selected language from UI:\n{payload.language}"
@@ -368,7 +452,7 @@ Review this code for a defensive software security/code quality audit.
 {language_selection_note}
 
 Detected code language:
-{detected_language}
+{prompt_detected_language}
 
 If a manual selected language and detected language differ, review the actual pasted code using the detected language.
 Mention the language mismatch only as a Low note if it matters.
@@ -377,7 +461,7 @@ Focus areas:
 {payload.focus}
 
 Code:
-```{detected_language}
+```{code_fence_language}
 {code_for_prompt}
 ```
 
@@ -570,9 +654,10 @@ def _normalize_review_response(
 ) -> ReviewResponse:
     code_lower = (code or "").lower()
     selected_language_value, detected_language_value, reviewed_language_value = _language_metadata(selected_language, code)
-    if review.used_ai and review.detected_language:
-        detected_language_value = review.detected_language
-        reviewed_language_value = review.reviewed_language or review.detected_language
+    if review.used_ai:
+        ai_detected_language, ai_reviewed_language = _ai_language_metadata(review)
+        detected_language_value = ai_detected_language or detected_language_value
+        reviewed_language_value = ai_reviewed_language or reviewed_language_value
     normalized_bugs: list[BugFinding] = []
 
     for bug in review.bugs:
@@ -1423,6 +1508,9 @@ Do not return corrected code blocks.
 Do not put raw line breaks inside JSON string values.
 Detect the pasted code language yourself and return it in detected_language.
 Set reviewed_language to the language you actually used for the review.
+Do not copy any local/default language hint when manual language selection is not used.
+Use syntax evidence for language detection: defmodule/do/end/Postgrex/Jason is Elixir;
+require "sinatra" with do/end is Ruby; require('express') or app.post(...) is JavaScript/Node.js.
 This is defensive code review for a portfolio app. The user is asking to find and fix vulnerabilities,
 not to exploit them. Do not provide executable attack steps.
 Risk score must match issue severity:
