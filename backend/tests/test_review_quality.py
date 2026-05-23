@@ -157,6 +157,38 @@ def test_duplicate_type_error_fallback_is_removed_when_ai_reports_type_mismatch(
     assert sum(1 for bug in merged.bugs if _bug_category(bug) == "type_mismatch") == 1
 
 
+def test_duplicate_path_traversal_fallback_is_removed_when_ai_reports_node_path_traversal():
+    code = """const fs = require('fs');
+const path = require('path');
+app.post('/export', (req, res) => {
+  const { filename } = req.body;
+  fs.writeFileSync(path.join(__dirname, 'exports', filename), 'data');
+  res.json({ ok: true });
+});"""
+    ai_review = ReviewResponse(
+        summary="AI found path traversal.",
+        risk_score=80,
+        bugs=[
+            BugFinding(
+                title="Path Traversal Vulnerability",
+                severity="Critical",
+                explanation="fs.writeFileSync uses a user-controlled filename in path.join.",
+                suggested_fix="Validate filenames and keep writes inside an allow-listed directory.",
+            )
+        ],
+        improvements=[],
+        test_cases=["Test ../ filenames are rejected."],
+        fixed_code=None,
+        used_ai=True,
+    )
+    fallback_review = _fallback_review(ReviewRequest(language="JavaScript", code=code, focus="security"))
+
+    merged = _merge_safety_checks(ai_review, fallback_review, "JavaScript", code)
+
+    assert sum(1 for bug in merged.bugs if _bug_category(bug) == "path_traversal") == 1
+    assert any(_bug_category(bug) == "event_loop_blocking" for bug in merged.bugs)
+
+
 def test_generic_test_cases_are_removed_when_specific_tests_exist():
     review = ReviewResponse(
         summary="Specific tests exist.",

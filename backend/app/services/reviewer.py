@@ -313,6 +313,22 @@ def _bug_text(bug: BugFinding) -> str:
 
 def _bug_category(bug: BugFinding) -> str:
     text = _bug_text(bug)
+    title = bug.title.lower()
+
+    title_first_patterns = [
+        ("language_mismatch", ["language mismatch", "wrong language"]),
+        ("path_traversal", ["path traversal", "directory traversal", "arbitrary file"]),
+        ("event_loop_blocking", ["event loop", "synchronous file", "writefilesync"]),
+        ("command_injection", ["command injection", "shell injection"]),
+        ("sql_injection", ["sql injection"]),
+        ("raw_card", ["raw card", "card number", "payment card", "credit card"]),
+        ("ssrf", ["ssrf", "server-side request forgery"]),
+        ("hardcoded_secret", ["hardcoded secret", "hardcoded api", "hardcoded key"]),
+    ]
+
+    for category, patterns in title_first_patterns:
+        if any(pattern in title for pattern in patterns):
+            return category
 
     category_patterns = [
         ("language_mismatch", ["language mismatch", "wrong language", "not python", "not javascript", "selected language", "code is node.js", "code is javascript"]),
