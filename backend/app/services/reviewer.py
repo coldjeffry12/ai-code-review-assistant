@@ -58,6 +58,7 @@ _LANGUAGE_ALIASES = {
     "kotlin": "Kotlin",
     "node": "JavaScript",
     "node.js": "JavaScript",
+    "nim": "Nim",
     "php": "PHP",
     "python": "Python",
     "py": "Python",
@@ -183,6 +184,19 @@ def _code_looks_like_elixir(code_lower: str) -> bool:
     )
 
 
+def _code_looks_like_nim(code_lower: str) -> bool:
+    return bool(
+        re.search(r"^\s*import\s+(?:jester|db_sqlite|osproc|strformat|strutils|httpclient)\b", code_lower, re.MULTILINE)
+        or re.search(r"^\s*proc\s+\w+\s*\([^)]*\)\s*:", code_lower, re.MULTILINE)
+        or re.search(r"^\s*routes\s*:", code_lower, re.MULTILINE)
+        or re.search(r"^\s*when\s+ismainmodule\s*:", code_lower, re.MULTILINE)
+        or "runforever()" in code_lower
+        or "execmd(" in code_lower
+        or "newhttpclient()" in code_lower
+        or "db.getrow(sql(" in code_lower
+    )
+
+
 def _code_looks_like_node_js(code_lower: str) -> bool:
     if _code_looks_like_ruby(code_lower):
         return False
@@ -206,6 +220,8 @@ def _detected_review_language(selected_language: str, code: str) -> str:
         return "Ruby"
     if _code_looks_like_elixir(code_lower):
         return "Elixir"
+    if _code_looks_like_nim(code_lower):
+        return "Nim"
     if _code_looks_like_node_js(code_lower):
         return "JavaScript"
     if re.search(r"\b(public|private|protected)\s+class\b|\bsystem\.out\.println\b|\bstring\[\]\s+args\b|\.getbytes\s*\(", code_lower):
@@ -286,7 +302,7 @@ def _canonical_language_name(value: str | None) -> str | None:
 
 
 def _language_from_ai_summary(summary: str) -> str | None:
-    language_pattern = r"(elixir|python|ruby|javascript|typescript|node\.js|java|c\+\+|c#|sql|go|rust|php|kotlin|swift|bash)"
+    language_pattern = r"(elixir|python|ruby|javascript|typescript|node\.js|java|c\+\+|c#|sql|go|rust|php|kotlin|swift|bash|nim)"
     summary_lower = summary.lower()
     patterns = [
         rf"\b(?:the|this|provided|pasted)\s+{language_pattern}\s+code\b",
@@ -301,10 +317,15 @@ def _language_from_ai_summary(summary: str) -> str | None:
     return None
 
 
-def _ai_language_metadata(review: ReviewResponse) -> tuple[str | None, str | None]:
+def _ai_language_metadata(
+    review: ReviewResponse,
+    code: str | None = None,
+    selected_language: str | None = None,
+) -> tuple[str | None, str | None]:
     detected = _canonical_language_name(review.detected_language) or review.detected_language
     reviewed = _canonical_language_name(review.reviewed_language) or review.reviewed_language
     summary_language = _language_from_ai_summary(review.summary)
+    syntax_language = _detected_review_language(selected_language or "Auto", code or "") if code else None
 
     if summary_language and detected and _canonical_language_name(detected) != summary_language:
         detected = summary_language
@@ -312,6 +333,9 @@ def _ai_language_metadata(review: ReviewResponse) -> tuple[str | None, str | Non
     elif summary_language and not detected:
         detected = summary_language
         reviewed = reviewed or summary_language
+    elif detected == "SQL" and syntax_language and syntax_language not in {"SQL", "Auto", "Plain Text"}:
+        detected = syntax_language
+        reviewed = syntax_language
 
     return detected, reviewed or detected
 
@@ -655,7 +679,7 @@ def _normalize_review_response(
     code_lower = (code or "").lower()
     selected_language_value, detected_language_value, reviewed_language_value = _language_metadata(selected_language, code)
     if review.used_ai:
-        ai_detected_language, ai_reviewed_language = _ai_language_metadata(review)
+        ai_detected_language, ai_reviewed_language = _ai_language_metadata(review, code, selected_language)
         detected_language_value = ai_detected_language or detected_language_value
         reviewed_language_value = ai_reviewed_language or reviewed_language_value
     normalized_bugs: list[BugFinding] = []
@@ -1510,7 +1534,9 @@ Detect the pasted code language yourself and return it in detected_language.
 Set reviewed_language to the language you actually used for the review.
 Do not copy any local/default language hint when manual language selection is not used.
 Use syntax evidence for language detection: defmodule/do/end/Postgrex/Jason is Elixir;
-require "sinatra" with do/end is Ruby; require('express') or app.post(...) is JavaScript/Node.js.
+require "sinatra" with do/end is Ruby; import jester/proc/routes/when isMainModule is Nim;
+require('express') or app.post(...) is JavaScript/Node.js.
+SQL keywords inside strings are a SQL injection risk, but they do not make the whole pasted code SQL.
 This is defensive code review for a portfolio app. The user is asking to find and fix vulnerabilities,
 not to exploit them. Do not provide executable attack steps.
 Risk score must match issue severity:

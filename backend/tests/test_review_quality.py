@@ -329,6 +329,26 @@ end"""
     assert _detected_review_language("Auto", code) == "Elixir"
 
 
+def test_nim_jester_code_auto_detects_nim_not_sql():
+    code = """import jester
+import db_sqlite
+import osproc
+
+proc login(email: string, password: string): JsonNode =
+  let query = "SELECT id, email FROM users WHERE email = '" & email & "'"
+  let row = db.getRow(sql(query))
+  return %*{"email": row[0]}
+
+routes:
+  post "/login":
+    resp $login(@"email", @"password")
+
+when isMainModule:
+  runForever()"""
+
+    assert _detected_review_language("Auto", code) == "Nim"
+
+
 def test_auto_ai_prompt_does_not_send_local_detected_language_hint():
     code = """defmodule HospitalBillingService do
   def login(email, password) do
@@ -401,6 +421,45 @@ def test_ai_summary_language_corrects_conflicting_detected_metadata():
 
     assert review.detected_language == "Elixir"
     assert review.reviewed_language == "Elixir"
+
+
+def test_ai_sql_language_metadata_is_corrected_for_nim_application_code():
+    review = _review_from_ai_json(
+        {
+            "summary": "AI review completed. The code has SQL injection and command injection risks.",
+            "detected_language": "SQL",
+            "reviewed_language": "SQL",
+            "risk_score": 100,
+            "bugs": [
+                {
+                    "title": "SQL injection",
+                    "severity": "Critical",
+                    "explanation": "The query concatenates user input.",
+                    "suggested_fix": "Use parameterized queries.",
+                }
+            ],
+            "improvements": ["Validate route input."],
+            "test_cases": ["Test SQL injection payloads are rejected."],
+            "fixed_code": None,
+        },
+        ReviewRequest(
+            code="""import jester
+import db_sqlite
+
+proc login(email: string): JsonNode =
+  let query = "SELECT id FROM users WHERE email = '" & email & "'"
+  let row = db.getRow(sql(query))
+  return %*{"id": row[0]}
+
+routes:
+  post "/login":
+    resp $login(@"email")""",
+            focus="security",
+        ),
+    )
+
+    assert review.detected_language == "Nim"
+    assert review.reviewed_language == "Nim"
 
 
 def test_ai_language_detection_overrides_local_hint():
