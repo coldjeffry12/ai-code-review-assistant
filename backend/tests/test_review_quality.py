@@ -100,39 +100,52 @@ def test_ai_failure_uses_clean_fallback_summary(monkeypatch):
 
 def test_ai_uses_local_findings_context_when_raw_code_attempts_fail(monkeypatch):
     calls = {"count": 0, "prompts": []}
+    review_content = json.dumps(
+        {
+            "summary": "AI review completed using local safety findings.",
+            "risk_score": 80,
+            "bugs": [
+                {
+                    "title": "Hardcoded secret in source code",
+                    "severity": "High",
+                    "explanation": "A secret is stored directly in code.",
+                    "suggested_fix": "Move it to an environment variable.",
+                }
+            ],
+            "improvements": ["Keep sensitive configuration outside source code."],
+            "test_cases": ["Test that secrets are loaded from environment variables."],
+            "fixed_code": None,
+        }
+    )
+    language_content = json.dumps(
+        {
+            "detected_language": "Java",
+            "confidence": 0.99,
+            "evidence": "The code uses Java String declarations.",
+        }
+    )
 
     class FakeMessage:
-        content = json.dumps(
-            {
-                "summary": "AI review completed using local safety findings.",
-                "risk_score": 80,
-                "bugs": [
-                    {
-                        "title": "Hardcoded secret in source code",
-                        "severity": "High",
-                        "explanation": "A secret is stored directly in code.",
-                        "suggested_fix": "Move it to an environment variable.",
-                    }
-                ],
-                "improvements": ["Keep sensitive configuration outside source code."],
-                "test_cases": ["Test that secrets are loaded from environment variables."],
-                "fixed_code": None,
-            }
-        )
+        def __init__(self, content: str):
+            self.content = content
 
     class FakeChoice:
-        message = FakeMessage()
+        def __init__(self, content: str):
+            self.message = FakeMessage(content)
 
     class FakeCompletion:
-        choices = [FakeChoice()]
+        def __init__(self, content: str):
+            self.choices = [FakeChoice(content)]
 
     class FlakyCompletions:
         def create(self, **kwargs):
             calls["count"] += 1
             calls["prompts"].append(kwargs["messages"][-1]["content"])
-            if calls["count"] < 3:
+            if calls["count"] == 1:
+                return FakeCompletion(language_content)
+            if calls["count"] < 4:
                 raise ValueError("raw review failed")
-            return FakeCompletion()
+            return FakeCompletion(review_content)
 
     class FlakyChat:
         completions = FlakyCompletions()
@@ -155,7 +168,7 @@ def test_ai_uses_local_findings_context_when_raw_code_attempts_fail(monkeypatch)
         )
     )
 
-    assert calls["count"] == 3
+    assert calls["count"] == 4
     assert "Local safety findings:" in calls["prompts"][-1]
     assert review.used_ai is True
     assert review.review_source == "ai_from_local_findings"
@@ -218,7 +231,7 @@ def test_ai_prompt_uses_detected_language_when_selection_is_wrong():
 
     assert _detected_review_language(payload.language, payload.code) == "Java"
     assert "Selected language from UI:\nPython" in prompt
-    assert "Detected code language:\nJava" in prompt
+    assert "AI language detection step result:\nJava" in prompt
     assert "```Java" in prompt
 
 
@@ -358,8 +371,8 @@ end"""
 
     prompt = _ai_user_prompt(ReviewRequest(code=code, focus="security"))
 
-    assert "Manual language selection:\nNot used. Detect the language from the pasted code." in prompt
-    assert "Detected code language:\nAI must detect this from the pasted code." in prompt
+    assert "Manual language selection:\nNot used. The previous AI step detected the pasted code language." in prompt
+    assert "AI language detection step result:\nAI must detect this from the pasted code." in prompt
     assert "```text" in prompt
     assert "```Python" not in prompt
 

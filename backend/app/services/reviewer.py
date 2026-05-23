@@ -456,11 +456,21 @@ def _ai_user_prompt(payload: ReviewRequest, similar_cached_review: dict[str, Any
     local_detected_language = _detected_review_language(payload.language, payload.code)
     prompt_detected_language = "AI must detect this from the pasted code." if _is_auto_language(payload.language) else local_detected_language
     code_fence_language = "text" if _is_auto_language(payload.language) else local_detected_language
+    return _ai_review_prompt(payload, prompt_detected_language, code_fence_language, similar_cached_review, retry_safe_mode)
+
+
+def _ai_review_prompt(
+    payload: ReviewRequest,
+    detected_language: str,
+    code_fence_language: str,
+    similar_cached_review: dict[str, Any] | None = None,
+    retry_safe_mode: bool = False,
+) -> str:
     code_for_prompt = _redact_for_ai_retry(payload.code) if retry_safe_mode else payload.code
     language_selection_note = (
         f"Selected language from UI:\n{payload.language}"
         if not _is_auto_language(payload.language)
-        else "Manual language selection:\nNot used. Detect the language from the pasted code."
+        else "Manual language selection:\nNot used. The previous AI step detected the pasted code language."
     )
     retry_instruction = ""
     if retry_safe_mode:
@@ -475,9 +485,10 @@ Review this code for a defensive software security/code quality audit.
 
 {language_selection_note}
 
-Detected code language:
-{prompt_detected_language}
+AI language detection step result:
+{detected_language}
 
+Review the code as this detected language before analyzing bugs.
 If a manual selected language and detected language differ, review the actual pasted code using the detected language.
 Mention the language mismatch only as a Low note if it matters.
 
@@ -491,6 +502,21 @@ Code:
 
 {retry_instruction}
 {_similar_review_context(similar_cached_review, payload.code)}
+"""
+
+
+def _ai_language_detection_prompt(code: str) -> str:
+    return f"""
+Detect the main programming language of this pasted code.
+Return only JSON.
+Do not review vulnerabilities in this step.
+If application code contains SQL strings, return the application language, not SQL.
+Return SQL only if the pasted code is primarily standalone SQL.
+
+Code:
+```text
+{code}
+```
 """
 
 
@@ -732,6 +758,7 @@ def _normalize_review_response(
         selected_language=selected_language_value or review.selected_language,
         detected_language=detected_language_value or review.detected_language,
         reviewed_language=reviewed_language_value or review.reviewed_language,
+        language_detection_source=review.language_detection_source or ("ai" if review.used_ai else "fallback"),
         cache_hit=review.cache_hit,
         similarity_used=review.similarity_used,
     )
@@ -959,6 +986,10 @@ def _merge_safety_checks(
         fixed_code=ai_review.fixed_code,
         used_ai=True,
         review_source="ai",
+        selected_language=ai_review.selected_language,
+        detected_language=ai_review.detected_language,
+        reviewed_language=ai_review.reviewed_language,
+        language_detection_source=ai_review.language_detection_source,
     ), selected_language, code)
 
 
@@ -1454,12 +1485,16 @@ def _fallback_review(payload: ReviewRequest, reason: str | None = None) -> Revie
     ), payload.language, payload.code)
 
 
-def _review_from_ai_json(parsed: Dict[str, Any], payload: ReviewRequest | None = None) -> ReviewResponse:
+def _review_from_ai_json(
+    parsed: Dict[str, Any],
+    payload: ReviewRequest | None = None,
+    detected_language_override: str | None = None,
+) -> ReviewResponse:
     fixed_code = parsed.get("fixed_code")
     if fixed_code is not None:
         fixed_code = str(fixed_code).strip() or None
-    detected_language = str(parsed.get("detected_language") or "").strip() or None
-    reviewed_language = str(parsed.get("reviewed_language") or detected_language or "").strip() or None
+    detected_language = detected_language_override or str(parsed.get("detected_language") or "").strip() or None
+    reviewed_language = detected_language_override or str(parsed.get("reviewed_language") or detected_language or "").strip() or None
 
     return _normalize_review_response(ReviewResponse(
         summary=str(parsed.get("summary") or "AI review completed.").strip(),
@@ -1472,10 +1507,11 @@ def _review_from_ai_json(parsed: Dict[str, Any], payload: ReviewRequest | None =
         review_source="ai",
         detected_language=detected_language,
         reviewed_language=reviewed_language,
+        language_detection_source="ai" if detected_language else None,
     ), payload.language if payload else None, payload.code if payload else None)
 
 
-def _review_from_ai_text(content: str, payload: ReviewRequest) -> ReviewResponse:
+def _review_from_ai_text(content: str, payload: ReviewRequest, detected_language_override: str | None = None) -> ReviewResponse:
     cleaned = re.sub(r"\s+", " ", content.strip())
     if len(cleaned) > 500:
         cleaned = cleaned[:497].rstrip() + "..."
@@ -1489,6 +1525,9 @@ def _review_from_ai_text(content: str, payload: ReviewRequest) -> ReviewResponse
         fixed_code=None,
         used_ai=True,
         review_source="ai_text_repair",
+        detected_language=detected_language_override,
+        reviewed_language=detected_language_override,
+        language_detection_source="ai" if detected_language_override else None,
     ), payload.language, payload.code)
 
 
@@ -1586,11 +1625,26 @@ Your JSON must match this structure:
 }
 """
 
-    def completion_options_for(user_prompt: str) -> dict[str, Any]:
+    language_detection_system_prompt = """
+You are a programming language detection assistant.
+Return only valid JSON.
+Detect the main programming language of pasted code before any review happens.
+Use syntax evidence, not vulnerability type.
+SQL keywords embedded inside application strings are not enough to classify the whole code as SQL.
+Return SQL only for standalone SQL scripts or mostly raw SQL.
+Your JSON must match this structure:
+{
+  "detected_language": "language name",
+  "confidence": 0.0,
+  "evidence": "brief syntax evidence"
+}
+"""
+
+    def completion_options_for(user_prompt: str, active_system_prompt: str = system_prompt) -> dict[str, Any]:
         options: dict[str, Any] = {
             "model": model,
             "messages": [
-                {"role": "system", "content": system_prompt.strip()},
+                {"role": "system", "content": active_system_prompt.strip()},
                 {"role": "user", "content": user_prompt.strip()},
             ],
             "response_format": {"type": "json_object"},
@@ -1606,7 +1660,20 @@ Your JSON must match this structure:
             }
         return options
 
-    async def run_ai_review(user_prompt: str) -> ReviewResponse:
+    async def run_ai_language_detection() -> str:
+        completion = await asyncio.to_thread(
+            client.chat.completions.create,
+            **completion_options_for(_ai_language_detection_prompt(payload.code), language_detection_system_prompt),
+        )
+
+        content = completion.choices[0].message.content or "{}"
+        parsed = _safe_json_loads(content)
+        detected_language = _canonical_language_name(str(parsed.get("detected_language") or "")) or str(parsed.get("detected_language") or "").strip()
+        if not detected_language:
+            raise ValueError("AI language detection did not return detected_language.")
+        return detected_language
+
+    async def run_ai_review(user_prompt: str, detected_language: str | None = None) -> ReviewResponse:
         completion = await asyncio.to_thread(
             client.chat.completions.create,
             **completion_options_for(user_prompt),
@@ -1615,15 +1682,40 @@ Your JSON must match this structure:
         content = completion.choices[0].message.content or "{}"
         try:
             parsed = _safe_json_loads(content)
-            return _review_from_ai_json(parsed, payload)
+            return _review_from_ai_json(parsed, payload, detected_language)
         except (json.JSONDecodeError, ValueError):
-            return _review_from_ai_text(content, payload)
+            return _review_from_ai_text(content, payload, detected_language)
 
     safety_review = _fallback_review(payload)
 
     try:
         try:
-            ai_review = await run_ai_review(_ai_user_prompt(payload, similar_cached_review))
+            ai_detected_language = await run_ai_language_detection()
+            logger.info("AI language detection completed. detected_language=%s", ai_detected_language)
+        except Exception as detection_exc:
+            ai_detected_language = _detected_review_language(payload.language, payload.code)
+            logger.warning(
+                "AI language detection failed; using fallback language detection. error_type=%s error=%s fallback_language=%s",
+                detection_exc.__class__.__name__,
+                _safe_exception_summary(detection_exc),
+                ai_detected_language,
+            )
+
+        review_prompt = _ai_review_prompt(
+            payload,
+            ai_detected_language,
+            ai_detected_language,
+            similar_cached_review,
+        )
+        safe_review_prompt = _ai_review_prompt(
+            payload,
+            ai_detected_language,
+            ai_detected_language,
+            similar_cached_review,
+            retry_safe_mode=True,
+        )
+        try:
+            ai_review = await run_ai_review(review_prompt, ai_detected_language)
         except Exception as first_exc:
             logger.warning(
                 "AI raw review attempt failed. error_type=%s error=%s",
@@ -1631,14 +1723,14 @@ Your JSON must match this structure:
                 _safe_exception_summary(first_exc),
             )
             try:
-                ai_review = await run_ai_review(_ai_user_prompt(payload, similar_cached_review, retry_safe_mode=True))
+                ai_review = await run_ai_review(safe_review_prompt, ai_detected_language)
             except Exception as retry_exc:
                 logger.warning(
                     "AI safe retry attempt failed. error_type=%s error=%s",
                     retry_exc.__class__.__name__,
                     _safe_exception_summary(retry_exc),
                 )
-                ai_review = await run_ai_review(_ai_local_findings_prompt(payload, safety_review))
+                ai_review = await run_ai_review(_ai_local_findings_prompt(payload, safety_review), ai_detected_language)
                 ai_review.review_source = "ai_from_local_findings"
         review = _merge_safety_checks(ai_review, safety_review, payload.language, payload.code)
         if ai_review.review_source in {"ai_from_local_findings", "ai_text_repair"}:

@@ -31,5 +31,6 @@ class ReviewResponse(BaseModel):
     selected_language: Optional[str] = None
     detected_language: Optional[str] = None
     reviewed_language: Optional[str] = None
+    language_detection_source: Optional[str] = None
     cache_hit: bool = False
     similarity_used: Optional[float] = None

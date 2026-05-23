@@ -41,9 +41,17 @@ function getReviewSourceLabel(result: ReviewResponse) {
 }
 
 function getLanguageRows(result: ReviewResponse) {
+  const detectionSource =
+    result.language_detection_source === 'ai'
+      ? 'AI'
+      : result.language_detection_source === 'fallback'
+        ? 'Fallback'
+        : result.language_detection_source
+
   return [
     ['Detected', result.detected_language],
     ['Reviewed as', result.reviewed_language],
+    ['Detection', detectionSource],
   ].filter((row): row is [string, string] => Boolean(row[1]))
 }
 
