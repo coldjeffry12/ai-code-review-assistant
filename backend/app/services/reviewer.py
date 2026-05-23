@@ -2,6 +2,7 @@ import asyncio
 import difflib
 import hashlib
 import json
+import logging
 import os
 import re
 import time
@@ -11,6 +12,8 @@ from openai import OpenAI
 
 from app.schemas import ReviewRequest, ReviewResponse, BugFinding
 
+
+logger = logging.getLogger(__name__)
 
 _REVIEW_CACHE: dict[str, dict[str, Any]] = {}
 
@@ -159,6 +162,16 @@ def _redact_for_ai_retry(code: str) -> str:
     redacted = re.sub(r"rm\s+-rf\s+[^\"'\n;)]+", "[dangerous shell command omitted]", code, flags=re.IGNORECASE)
     redacted = re.sub(r"(?i)(password|api[_-]?key|secret|token|admin[_-]?key)\s*=\s*([\"']).*?\2", r"\1 = \"[redacted-demo-secret]\"", redacted)
     return redacted
+
+
+def _safe_exception_summary(exc: Exception) -> str:
+    message = str(exc) or exc.__class__.__name__
+    message = re.sub(r"sk-[A-Za-z0-9_\-]+", "[redacted-api-key]", message)
+    message = re.sub(r"(?i)(api[_-]?key|authorization|bearer)\s*[:=]\s*\S+", r"\1=[redacted]", message)
+    message = re.sub(r"\s+", " ", message).strip()
+    if len(message) > 300:
+        message = message[:297].rstrip() + "..."
+    return message
 
 
 def _int_env(name: str, default: int, min_value: int, max_value: int) -> int:
@@ -1333,6 +1346,7 @@ async def review_code(payload: ReviewRequest) -> ReviewResponse:
     is_ollama = _is_ollama_base_url(base_url)
 
     if not api_key:
+        logger.info("AI review skipped because OPENAI_API_KEY is not configured.")
         fallback_review = _fallback_review(payload, "Fallback review completed because OPENAI_API_KEY is not configured.")
         _apply_similar_cache_metadata(fallback_review, similar_cached_review)
         _store_review(payload, fallback_review)
@@ -1343,6 +1357,13 @@ async def review_code(payload: ReviewRequest) -> ReviewResponse:
     if base_url:
         client_options["base_url"] = base_url
     client = OpenAI(**client_options)
+    logger.info(
+        "AI review enabled. model=%s base_url=%s detected_language=%s code_lines=%s",
+        model,
+        "custom" if base_url else "openai-default",
+        _detected_review_language(payload.language, payload.code),
+        len(payload.code.splitlines()),
+    )
 
     system_prompt = """
 You are a senior software engineer and security-aware code reviewer.
@@ -1435,10 +1456,20 @@ Your JSON must match this structure:
     try:
         try:
             ai_review = await run_ai_review(_ai_user_prompt(payload, similar_cached_review))
-        except Exception:
+        except Exception as first_exc:
+            logger.warning(
+                "AI raw review attempt failed. error_type=%s error=%s",
+                first_exc.__class__.__name__,
+                _safe_exception_summary(first_exc),
+            )
             try:
                 ai_review = await run_ai_review(_ai_user_prompt(payload, similar_cached_review, retry_safe_mode=True))
-            except Exception:
+            except Exception as retry_exc:
+                logger.warning(
+                    "AI safe retry attempt failed. error_type=%s error=%s",
+                    retry_exc.__class__.__name__,
+                    _safe_exception_summary(retry_exc),
+                )
                 ai_review = await run_ai_review(_ai_local_findings_prompt(payload, safety_review))
                 ai_review.review_source = "ai_from_local_findings"
         review = _merge_safety_checks(ai_review, safety_review, payload.language, payload.code)
@@ -1451,7 +1482,12 @@ Your JSON must match this structure:
             review.similarity_used = similar_cached_review["similarity"]
         _store_review(payload, review)
         return review
-    except Exception:
+    except Exception as final_exc:
+        logger.warning(
+            "All AI review attempts failed; using fallback review. error_type=%s error=%s",
+            final_exc.__class__.__name__,
+            _safe_exception_summary(final_exc),
+        )
         fallback_review = _fallback_after_ai_error(payload, similar_cached_review)
         _store_review(payload, fallback_review)
         return fallback_review
