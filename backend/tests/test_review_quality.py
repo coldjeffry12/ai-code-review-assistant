@@ -239,6 +239,21 @@ def test_review_response_reports_selected_detected_and_reviewed_language():
     assert review.reviewed_language == "Java"
 
 
+def test_review_request_can_auto_detect_without_selected_language():
+    review = _fallback_review(
+        ReviewRequest(
+            code="""const express = require('express');
+const app = express();
+app.get('/health', (req, res) => res.json({ status: 'ok' }));""",
+            focus="bugs",
+        )
+    )
+
+    assert review.selected_language is None
+    assert review.detected_language == "JavaScript"
+    assert review.reviewed_language == "JavaScript"
+
+
 def test_safe_retry_prompt_redacts_dangerous_literals():
     payload = ReviewRequest(
         language="Java",

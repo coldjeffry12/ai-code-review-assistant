@@ -22,7 +22,7 @@ export type ReviewResponse = {
 }
 
 export type ReviewRequest = {
-  language: string
+  language?: string
   code: string
   focus: string
 }

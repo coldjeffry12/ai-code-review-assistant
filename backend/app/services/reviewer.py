@@ -206,8 +206,9 @@ def _language_metadata(selected_language: str | None, code: str | None) -> tuple
         return None, None, None
 
     selected = selected_language.strip()
+    selected_for_display = None if selected.lower() in {"auto", "auto-detect", "autodetect"} else selected
     detected = _detected_review_language(selected, code or "")
-    return selected, detected, detected
+    return selected_for_display, detected, detected
 
 
 def _cached_response(payload: ReviewRequest) -> ReviewResponse | None:

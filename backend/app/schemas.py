@@ -5,7 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field
 class ReviewRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
-    language: str = Field(..., min_length=1, max_length=50)
+    language: str = Field(default="Auto", min_length=1, max_length=50)
     code: str = Field(..., min_length=5, max_length=20000)
     focus: str = Field(default="bugs, security, performance, readability", max_length=200)
 

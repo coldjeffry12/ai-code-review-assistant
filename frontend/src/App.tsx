@@ -6,8 +6,6 @@ const defaultCode = `def divide_numbers(a, b):
 
 print(divide_numbers(10, 0))`
 
-const languageOptions = ['Python', 'JavaScript', 'TypeScript', 'React', 'Java', 'C++', 'SQL']
-
 type Theme = 'light' | 'dark'
 
 function getInitialTheme(): Theme {
@@ -44,7 +42,6 @@ function getReviewSourceLabel(result: ReviewResponse) {
 
 function getLanguageRows(result: ReviewResponse) {
   return [
-    ['Selected', result.selected_language],
     ['Detected', result.detected_language],
     ['Reviewed as', result.reviewed_language],
   ].filter((row): row is [string, string] => Boolean(row[1]))
@@ -52,7 +49,6 @@ function getLanguageRows(result: ReviewResponse) {
 
 function App() {
   const [theme, setTheme] = useState<Theme>(getInitialTheme)
-  const [language, setLanguage] = useState('Python')
   const [focus, setFocus] = useState('bugs, security, performance, readability')
   const [code, setCode] = useState(defaultCode)
   const [result, setResult] = useState<ReviewResponse | null>(null)
@@ -73,7 +69,7 @@ function App() {
     setResult(null)
 
     try {
-      const data = await reviewCode({ language, code, focus })
+      const data = await reviewCode({ code, focus })
       setResult(data)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong')
@@ -113,13 +109,6 @@ function App() {
             <h2>Review Input</h2>
             <span>{code.trim().split(/\r?\n/).length} lines</span>
           </div>
-
-          <label htmlFor="language">Language</label>
-          <select id="language" value={language} onChange={(e) => setLanguage(e.target.value)}>
-            {languageOptions.map((option) => (
-              <option key={option}>{option}</option>
-            ))}
-          </select>
 
           <label htmlFor="focus">Review Focus</label>
           <input
