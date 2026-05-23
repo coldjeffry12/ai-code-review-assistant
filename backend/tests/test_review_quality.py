@@ -254,6 +254,67 @@ app.get('/health', (req, res) => res.json({ status: 'ok' }));""",
     assert review.reviewed_language == "JavaScript"
 
 
+def test_ruby_sinatra_code_auto_detects_ruby_not_javascript():
+    code = """require "sinatra"
+require "sqlite3"
+require "net/http"
+
+JWT_SECRET = "demo-jwt-secret"
+
+post "/login" do
+  body = JSON.parse(request.body.read)
+  database = SQLite3::Database.new("clinic.db")
+  user = database.execute("SELECT id FROM users WHERE email = '#{body["email"]}'").first
+  database.close
+  { token: "#{JWT_SECRET}-#{user[0]}" }.to_json
+end"""
+
+    review = _fallback_review(ReviewRequest(code=code, focus="security"))
+
+    assert _detected_review_language("Auto", code) == "Ruby"
+    assert review.selected_language is None
+    assert review.detected_language == "Ruby"
+    assert review.reviewed_language == "Ruby"
+
+
+def test_auto_detect_removes_stale_language_mismatch_bug():
+    review = ReviewResponse(
+        summary="AI incorrectly reported a mismatch.",
+        risk_score=90,
+        bugs=[
+            BugFinding(
+                title="Language selection mismatch note",
+                severity="Low",
+                explanation="The code was reviewed as JavaScript.",
+                suggested_fix="Choose JavaScript.",
+            )
+        ],
+        improvements=[],
+        test_cases=["Review with the right language."],
+        fixed_code=None,
+        used_ai=True,
+    )
+
+    normalized = _normalize_review_response(
+        review,
+        selected_language="Auto",
+        code='require "sinatra"\npost "/login" do\nend',
+    )
+
+    assert normalized.bugs == []
+    assert normalized.detected_language == "Ruby"
+    assert normalized.reviewed_language == "Ruby"
+
+
+def test_node_jwt_code_still_detects_javascript():
+    code = """const jwt = require('jsonwebtoken');
+const express = require('express');
+const app = express();
+app.post('/login', (req, res) => res.json({ token: jwt.sign({ id: 1 }, 'secret') }));"""
+
+    assert _detected_review_language("Auto", code) == "JavaScript"
+
+
 def test_safe_retry_prompt_redacts_dangerous_literals():
     payload = ReviewRequest(
         language="Java",

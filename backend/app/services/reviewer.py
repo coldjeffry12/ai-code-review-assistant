@@ -29,10 +29,10 @@ _JAVASCRIPT_LANGUAGES = {"javascript", "js", "node", "node.js", "express", "type
 
 _NODE_MARKERS = (
     "require(",
-    "express",
     "axios",
     "fs.",
-    "jwt",
+    "jwt.",
+    "jsonwebtoken",
     "child_process",
     "module.exports",
     "app.get",
@@ -126,8 +126,29 @@ def _is_javascript_language(language: str | None) -> bool:
     return language.strip().lower() in _JAVASCRIPT_LANGUAGES
 
 
+def _is_auto_language(language: str | None) -> bool:
+    if not language:
+        return True
+    return language.strip().lower() in {"auto", "auto-detect", "autodetect"}
+
+
+def _code_looks_like_ruby(code_lower: str) -> bool:
+    return bool(
+        re.search(r"^\s*require\s+['\"](?:sinatra|sqlite3|json|yaml|net/http|uri|fileutils)['\"]", code_lower, re.MULTILINE)
+        or re.search(r"^\s*(get|post|put|patch|delete)\s+['\"][^'\"]+['\"]\s+do\b", code_lower, re.MULTILINE)
+        or "sqlite3::database" in code_lower
+        or "net::http" in code_lower
+        or "fileutils" in code_lower
+        or "yaml.load" in code_lower
+    )
+
+
 def _code_looks_like_node_js(code_lower: str) -> bool:
-    return any(marker in code_lower for marker in _NODE_MARKERS)
+    if _code_looks_like_ruby(code_lower):
+        return False
+    return any(marker in code_lower for marker in _NODE_MARKERS) or bool(
+        re.search(r"\b(require|import)\s*\(?\s*['\"](?:express|axios|fs|jsonwebtoken|child_process)['\"]", code_lower)
+    )
 
 
 def _selected_language_matches_code(language: str | None, code_lower: str) -> bool:
@@ -141,6 +162,8 @@ def _detected_review_language(selected_language: str, code: str) -> str:
     selected = selected_language.strip() or "Plain Text"
     normalized_selected = selected.lower()
 
+    if _code_looks_like_ruby(code_lower):
+        return "Ruby"
     if _code_looks_like_node_js(code_lower):
         return "JavaScript"
     if re.search(r"\b(public|private|protected)\s+class\b|\bsystem\.out\.println\b|\bstring\[\]\s+args\b|\.getbytes\s*\(", code_lower):
@@ -326,6 +349,11 @@ def _fallback_after_ai_error(payload: ReviewRequest, similar_cached_review: dict
 def _ai_user_prompt(payload: ReviewRequest, similar_cached_review: dict[str, Any] | None = None, retry_safe_mode: bool = False) -> str:
     detected_language = _detected_review_language(payload.language, payload.code)
     code_for_prompt = _redact_for_ai_retry(payload.code) if retry_safe_mode else payload.code
+    language_selection_note = (
+        f"Selected language from UI:\n{payload.language}"
+        if not _is_auto_language(payload.language)
+        else "Manual language selection:\nNot used. Detect the language from the pasted code."
+    )
     retry_instruction = ""
     if retry_safe_mode:
         retry_instruction = """
@@ -337,13 +365,12 @@ Do not provide exploit steps or executable attack commands.
     return f"""
 Review this code for a defensive software security/code quality audit.
 
-Selected language from UI:
-{payload.language}
+{language_selection_note}
 
 Detected code language:
 {detected_language}
 
-If selected language and detected language differ, review the actual pasted code using the detected language.
+If a manual selected language and detected language differ, review the actual pasted code using the detected language.
 Mention the language mismatch only as a Low note if it matters.
 
 Focus areas:
@@ -361,6 +388,7 @@ Code:
 
 def _ai_local_findings_prompt(payload: ReviewRequest, safety_review: ReviewResponse) -> str:
     detected_language = _detected_review_language(payload.language, payload.code)
+    language_selection_note = payload.language if not _is_auto_language(payload.language) else "Auto-detect"
     bug_lines = [
         f"- {bug.severity}: {bug.title}. {bug.explanation} Fix: {bug.suggested_fix}"
         for bug in safety_review.bugs
@@ -376,7 +404,7 @@ Use the findings below as evidence and improve the wording, severity consistency
 Always set fixed_code to null.
 Return the same strict JSON structure.
 
-Selected language from UI: {payload.language}
+Selected language from UI: {language_selection_note}
 Detected code language: {detected_language}
 Code size: {len(payload.code.splitlines())} lines
 Focus areas: {payload.focus}
@@ -449,7 +477,7 @@ def _bug_category(bug: BugFinding) -> str:
     title = bug.title.lower()
 
     title_first_patterns = [
-        ("language_mismatch", ["language mismatch", "wrong language"]),
+        ("language_mismatch", ["language mismatch", "language selection mismatch", "wrong language"]),
         ("path_traversal", ["path traversal", "directory traversal", "arbitrary file"]),
         ("event_loop_blocking", ["event loop", "synchronous file", "writefilesync"]),
         ("command_injection", ["command injection", "shell injection"]),
@@ -464,7 +492,7 @@ def _bug_category(bug: BugFinding) -> str:
             return category
 
     category_patterns = [
-        ("language_mismatch", ["language mismatch", "wrong language", "not python", "not javascript", "selected language", "code is node.js", "code is javascript"]),
+        ("language_mismatch", ["language mismatch", "language selection mismatch", "wrong language", "not python", "not javascript", "selected language", "code is node.js", "code is javascript"]),
         ("event_loop_blocking", ["event loop blocking", "writefilesync", "synchronous file"]),
         ("plaintext_password", ["plain-text password", "plaintext password", "password comparison"]),
         ("weak_admin", ["admin key", "adminkey", "weak admin", "admin authorization"]),
@@ -556,7 +584,7 @@ def _normalize_review_response(
         )
 
         if _bug_category(normalized_bug) == "language_mismatch":
-            if _selected_language_matches_code(selected_language, code_lower):
+            if _is_auto_language(selected_language) or _selected_language_matches_code(selected_language, code_lower):
                 continue
             normalized_bug = BugFinding(
                 title="Language selection mismatch note",
@@ -637,7 +665,7 @@ def _has_hardcoded_secret(code_lower: str) -> bool:
 
 def _has_unsafe_sql_construction(code_lower: str) -> bool:
     has_sql = re.search(r"\b(select|insert|update|delete)\b", code_lower)
-    has_concat_or_format = re.search(r"(\+\s*\w+|f[\"']|`[^`]*\$\{|\.format\s*\(|%\s*\(|req\.(?:body|query|params))", code_lower, re.DOTALL)
+    has_concat_or_format = re.search(r"(\+\s*\w+|f[\"']|`[^`]*\$\{|#\{|\.format\s*\(|%\s*\(|req\.(?:body|query|params)|params\s*\[)", code_lower, re.DOTALL)
     return bool(has_sql and has_concat_or_format)
 
 
@@ -1400,6 +1428,7 @@ Do not give Low risk when Critical or High issues exist.
 Mark issues as Critical only for crashes, data loss, security risks, or serious runtime failures.
 Mention business logic issues separately from runtime bugs.
 Do not mark a Node.js/Express codebase as a language mismatch when JavaScript is selected.
+If manual language selection is Auto-detect or not used, do not create a language mismatch finding.
 If the selected language appears wrong, mention it only as a Low note, not a Critical bug.
 If the selected language and pasted code do not match, still review the actual code shown.
 Look specifically for payment/card handling, SQL injection, path traversal, missing request timeouts,
