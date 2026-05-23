@@ -350,6 +350,7 @@ The direct raw-code AI review failed, so complete a defensive AI review using th
 Do not claim you executed the code.
 Do not invent exploit steps.
 Use the findings below as evidence and improve the wording, severity consistency, summary, and test ideas.
+Always set fixed_code to null.
 Return the same strict JSON structure.
 
 Selected language from UI: {payload.language}
@@ -1330,7 +1331,8 @@ async def review_code(payload: ReviewRequest) -> ReviewResponse:
 You are a senior software engineer and security-aware code reviewer.
 Return only valid JSON.
 Do not use markdown.
-Use null for fixed_code unless the fix is short and can be represented as a valid escaped JSON string.
+Always set fixed_code to null.
+Do not return corrected code blocks.
 Do not put raw line breaks inside JSON string values.
 This is defensive code review for a portfolio app. The user is asking to find and fix vulnerabilities,
 not to exploit them. Do not provide executable attack steps.

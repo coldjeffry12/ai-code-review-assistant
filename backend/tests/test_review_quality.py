@@ -3,6 +3,7 @@ import json
 
 from app.schemas import BugFinding, ReviewRequest, ReviewResponse
 from app.services.reviewer import (
+    _ai_local_findings_prompt,
     _ai_user_prompt,
     _bug_category,
     _clear_review_cache,
@@ -191,6 +192,18 @@ def test_safe_retry_prompt_redacts_dangerous_literals():
     assert "rm -rf important_folder" not in prompt
     assert "[dangerous shell command omitted]" in prompt
     assert "[redacted-demo-secret]" in prompt
+
+
+def test_local_findings_prompt_requires_null_fixed_code():
+    payload = ReviewRequest(
+        language="Python",
+        code="def divide(a, b):\n    return a / b\nprint(divide(10, 0))",
+        focus="bugs",
+    )
+    safety_review = _fallback_review(payload)
+    prompt = _ai_local_findings_prompt(payload, safety_review)
+
+    assert "Always set fixed_code to null." in prompt
 
 
 def test_duplicate_test_cases_are_removed():
