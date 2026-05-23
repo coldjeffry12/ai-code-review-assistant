@@ -295,3 +295,240 @@ open(os.path.join("/tmp/uploads", request["filename"]), "w").write("x")""",
     categories = {_bug_category(bug) for bug in review.bugs}
     assert {"sql_injection", "raw_card", "hardcoded_secret"}.issubset(categories)
     assert review.risk_score == 100
+
+
+def test_javascript_express_selected_as_javascript_does_not_show_language_mismatch():
+    review = ReviewResponse(
+        summary="AI incorrectly reported a mismatch.",
+        risk_score=90,
+        bugs=[
+            BugFinding(
+                title="Language Mismatch: Code is Node.js, not Python",
+                severity="Critical",
+                explanation="The code uses Express and require.",
+                suggested_fix="Select JavaScript.",
+            )
+        ],
+        improvements=[],
+        test_cases=["Test Express route behavior."],
+        fixed_code=None,
+        used_ai=True,
+    )
+
+    normalized = _normalize_review_response(
+        review,
+        selected_language="JavaScript",
+        code="const express = require('express'); const app = express(); app.post('/orders', handler);",
+    )
+
+    assert all(_bug_category(bug) != "language_mismatch" for bug in normalized.bugs)
+
+
+def test_language_mismatch_is_not_critical_when_it_remains():
+    review = ReviewResponse(
+        summary="Wrong language selected.",
+        risk_score=95,
+        bugs=[
+            BugFinding(
+                title="Language Mismatch: Code is Node.js, not Python",
+                severity="Critical",
+                explanation="The code appears to use a different runtime.",
+                suggested_fix="Select the closest matching language.",
+            )
+        ],
+        improvements=[],
+        test_cases=["Select the matching language and review again."],
+        fixed_code=None,
+        used_ai=True,
+    )
+
+    normalized = _normalize_review_response(review, selected_language="Python", code="const express = require('express');")
+
+    assert normalized.bugs[0].severity == "Low"
+    assert normalized.risk_score <= 25
+
+
+def test_child_process_exec_with_user_input_is_critical_command_injection():
+    review = _fallback_review(
+        ReviewRequest(
+            language="JavaScript",
+            code="""const { exec } = require('child_process');
+app.post('/backup', (req, res) => {
+  const { backupName } = req.body;
+  const command = "tar -czf backups/" + backupName + ".tgz data";
+  exec(command, (err) => res.json({ ok: !err }));
+});""",
+            focus="security",
+        )
+    )
+
+    assert any(_bug_category(bug) == "command_injection" and bug.severity == "Critical" for bug in review.bugs)
+
+
+def test_user_controlled_webhook_url_in_axios_post_is_ssrf():
+    review = _fallback_review(
+        ReviewRequest(
+            language="JavaScript",
+            code="""const axios = require('axios');
+app.post('/notify', async (req, res) => {
+  const { webhookUrl } = req.body;
+  await axios.post(webhookUrl, { orderId: req.body.orderId });
+  res.json({ ok: true });
+});""",
+            focus="security",
+        )
+    )
+
+    assert any(_bug_category(bug) == "ssrf" for bug in review.bugs)
+    assert any(_bug_category(bug) == "request_timeout" for bug in review.bugs)
+    assert any(_bug_category(bug) == "request_exception" for bug in review.bugs)
+
+
+def test_fs_writefilesync_with_user_filename_is_path_traversal_or_unsafe_write():
+    review = _fallback_review(
+        ReviewRequest(
+            language="JavaScript",
+            code="""const fs = require('fs');
+const path = require('path');
+app.post('/export', (req, res) => {
+  const { filename } = req.body;
+  fs.writeFileSync(path.join(__dirname, 'exports', filename), 'data');
+  res.json({ ok: true });
+});""",
+            focus="security",
+        )
+    )
+
+    assert any(_bug_category(bug) == "path_traversal" for bug in review.bugs)
+    assert any(_bug_category(bug) == "event_loop_blocking" for bug in review.bugs)
+
+
+def test_javascript_hardcoded_jwt_admin_and_database_secrets_are_detected():
+    review = _fallback_review(
+        ReviewRequest(
+            language="JavaScript",
+            code="""const JWT_SECRET = "demo-jwt";
+const ADMIN_KEY = "admin";
+const database_password = "password";""",
+            focus="security",
+        )
+    )
+
+    assert any(_bug_category(bug) == "hardcoded_secret" and bug.severity == "High" for bug in review.bugs)
+
+
+def test_javascript_raw_card_number_handling_is_detected():
+    review = _fallback_review(
+        ReviewRequest(
+            language="JavaScript",
+            code="""app.post('/pay', (req, res) => {
+  const { cardNumber, cvv } = req.body;
+  db.query(`INSERT INTO payments(card_number, cvv) VALUES (${cardNumber}, ${cvv})`);
+  res.json({ ok: true });
+});""",
+            focus="security, payments",
+        )
+    )
+
+    assert any(_bug_category(bug) == "raw_card" and bug.severity == "Critical" for bug in review.bugs)
+
+
+def test_plain_text_password_sql_comparison_is_detected():
+    review = _fallback_review(
+        ReviewRequest(
+            language="JavaScript",
+            code="""app.post('/login', (req, res) => {
+  const sql = "SELECT * FROM users WHERE email = '" + req.body.email + "' AND password = '" + req.body.password + "'";
+  db.query(sql, (err, rows) => res.json(rows[0]));
+});""",
+            focus="security",
+        )
+    )
+
+    assert any(_bug_category(bug) == "plaintext_password" and bug.severity == "High" for bug in review.bugs)
+
+
+def test_javascript_off_by_one_loop_is_detected():
+    review = _fallback_review(
+        ReviewRequest(
+            language="JavaScript",
+            code="""function total(items) {
+  let sum = 0;
+  for (let i = 0; i <= items.length; i++) {
+    sum += items[i].price;
+  }
+  return sum;
+}""",
+            focus="bugs",
+        )
+    )
+
+    assert any(_bug_category(bug) == "off_by_one" for bug in review.bugs)
+
+
+def test_rows_zero_without_check_is_detected():
+    review = _fallback_review(
+        ReviewRequest(
+            language="JavaScript",
+            code="""app.get('/users/:id', (req, res) => {
+  db.query('SELECT * FROM users WHERE id = ' + req.params.id, (err, rows) => {
+    res.json({ email: rows[0].email });
+  });
+});""",
+            focus="bugs",
+        )
+    )
+
+    assert any(_bug_category(bug) == "collection_none" for bug in review.bugs)
+
+
+def test_db_query_without_error_handling_is_detected():
+    review = _fallback_review(
+        ReviewRequest(
+            language="JavaScript",
+            code="""app.get('/orders', (req, res) => {
+  db.query('SELECT * FROM orders', (rows) => {
+    res.json(rows);
+  });
+});""",
+            focus="bugs",
+        )
+    )
+
+    assert any(_bug_category(bug) == "db_query_error" for bug in review.bugs)
+
+
+def test_node_security_payment_risk_score_becomes_100_for_multiple_critical_issues():
+    review = _fallback_review(
+        ReviewRequest(
+            language="JavaScript",
+            code="""const express = require('express');
+const axios = require('axios');
+const fs = require('fs');
+const path = require('path');
+const { exec } = require('child_process');
+const JWT_SECRET = "demo-jwt";
+const ADMIN_KEY = "admin";
+
+app.post('/order', (req, res) => {
+  const { email, cardNumber, cvv, webhookUrl, filename, backupName, amount } = req.body;
+  const sql = `INSERT INTO payments(email, card_number, cvv, amount) VALUES ('${email}', '${cardNumber}', '${cvv}', ${amount})`;
+  db.query(sql);
+  db.query(`UPDATE inventory SET quantity = quantity - 1 WHERE email = '${email}'`);
+  fs.writeFileSync(path.join(__dirname, 'exports', filename), cardNumber);
+  exec("tar -czf backups/" + backupName + ".tgz exports");
+  axios.post(webhookUrl, { cardNumber, amount });
+  const refundAmount = -amount;
+  for (let i = 0; i <= req.body.items.length; i++) {
+    console.log(req.body.items[i].name);
+  }
+  res.json({ ok: true, refundAmount });
+});""",
+            focus="security, payments",
+        )
+    )
+
+    categories = {_bug_category(bug) for bug in review.bugs}
+    assert {"sql_injection", "command_injection", "raw_card", "ssrf", "path_traversal"}.issubset(categories)
+    assert {"hardcoded_secret", "weak_admin", "negative_payment", "off_by_one", "transaction_rollback"}.issubset(categories)
+    assert review.risk_score == 100
