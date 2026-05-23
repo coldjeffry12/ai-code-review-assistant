@@ -161,6 +161,47 @@ def test_ai_uses_local_findings_context_when_raw_code_attempts_fail(monkeypatch)
     assert "local safety findings" in review.summary.lower()
 
 
+def test_invalid_ai_json_text_is_still_used_with_structured_findings(monkeypatch):
+    class TextMessage:
+        content = "The code has a division by zero bug and should validate the denominator."
+
+    class TextChoice:
+        message = TextMessage()
+
+    class TextCompletion:
+        choices = [TextChoice()]
+
+    class TextCompletions:
+        def create(self, **kwargs):
+            return TextCompletion()
+
+    class TextChat:
+        completions = TextCompletions()
+
+    class TextClient:
+        def __init__(self, **kwargs):
+            self.chat = TextChat()
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr("app.services.reviewer.OpenAI", TextClient)
+    _clear_review_cache()
+
+    review = asyncio.run(
+        review_code(
+            ReviewRequest(
+                language="Python",
+                code="def divide(a, b):\n    return a / b\nprint(divide(10, 0))",
+                focus="bugs",
+            )
+        )
+    )
+
+    assert review.used_ai is True
+    assert review.review_source == "ai_text_repair"
+    assert any(_bug_category(bug) == "division_by_zero" for bug in review.bugs)
+    assert any("division by zero" in item.lower() for item in review.improvements)
+
+
 def test_ai_prompt_uses_detected_language_when_selection_is_wrong():
     payload = ReviewRequest(
         language="Python",

@@ -1304,6 +1304,23 @@ def _review_from_ai_json(parsed: Dict[str, Any], payload: ReviewRequest | None =
     ), payload.language if payload else None, payload.code if payload else None)
 
 
+def _review_from_ai_text(content: str, payload: ReviewRequest) -> ReviewResponse:
+    cleaned = re.sub(r"\s+", " ", content.strip())
+    if len(cleaned) > 500:
+        cleaned = cleaned[:497].rstrip() + "..."
+
+    return _normalize_review_response(ReviewResponse(
+        summary="AI review completed, but the model response was not valid JSON. Structured local findings were merged with the AI response.",
+        risk_score=50,
+        bugs=[],
+        improvements=[cleaned] if cleaned else ["Review the structured findings and test ideas."],
+        test_cases=["Retest the highlighted risky paths after applying fixes."],
+        fixed_code=None,
+        used_ai=True,
+        review_source="ai_text_repair",
+    ), payload.language, payload.code)
+
+
 async def review_code(payload: ReviewRequest) -> ReviewResponse:
     exact_cached_review = _cached_response(payload)
     if exact_cached_review:
@@ -1407,8 +1424,11 @@ Your JSON must match this structure:
         )
 
         content = completion.choices[0].message.content or "{}"
-        parsed = _safe_json_loads(content)
-        return _review_from_ai_json(parsed, payload)
+        try:
+            parsed = _safe_json_loads(content)
+            return _review_from_ai_json(parsed, payload)
+        except (json.JSONDecodeError, ValueError):
+            return _review_from_ai_text(content, payload)
 
     safety_review = _fallback_review(payload)
 
@@ -1422,8 +1442,10 @@ Your JSON must match this structure:
                 ai_review = await run_ai_review(_ai_local_findings_prompt(payload, safety_review))
                 ai_review.review_source = "ai_from_local_findings"
         review = _merge_safety_checks(ai_review, safety_review, payload.language, payload.code)
-        if ai_review.review_source == "ai_from_local_findings":
+        if ai_review.review_source in {"ai_from_local_findings", "ai_text_repair"}:
             review.review_source = "ai_from_local_findings"
+            if ai_review.review_source == "ai_text_repair":
+                review.review_source = "ai_text_repair"
         if similar_cached_review:
             review.review_source = "ai_with_cache_context"
             review.similarity_used = similar_cached_review["similarity"]
