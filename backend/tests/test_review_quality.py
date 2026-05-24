@@ -332,6 +332,30 @@ app.post('/login', (req, res) => res.json({ token: jwt.sign({ id: 1 }, 'secret')
     assert _detected_review_language("Auto", code) == "JavaScript"
 
 
+def test_d_vibed_code_auto_detects_d_not_javascript():
+    code = """import vibe.d;
+import std.stdio;
+import std.process;
+
+enum ADMIN_TOKEN = "demo-admin-token";
+
+void login(HTTPServerRequest req, HTTPServerResponse res) {
+    auto body = req.json;
+    string email = body["email"].str;
+    string sql = "SELECT id FROM users WHERE email = '" ~ email ~ "'";
+    res.writeJsonBody(["ok": "true"]);
+}
+
+void main() {
+    auto router = new URLRouter;
+    router.post("/login", &login);
+    listenHTTP(new HTTPServerSettings, router);
+    runApplication();
+}"""
+
+    assert _detected_review_language("Auto", code) == "D"
+
+
 def test_elixir_code_auto_detects_elixir_not_python():
     code = """defmodule HospitalBillingService do
   @jwt_secret "demo-jwt-secret"
@@ -674,6 +698,43 @@ class Demo {
     categories = {_bug_category(bug) for bug in review.bugs}
     assert review.detected_language == "Groovy"
     assert {"sql_injection", "command_injection", "path_traversal", "dynamic_execution"}.issubset(categories)
+    assert review.risk_score == 100
+
+
+def test_d_vibed_fallback_detects_sql_command_and_path_risks():
+    review = _fallback_review(
+        ReviewRequest(
+            code="""import vibe.d;
+import std.process;
+import std.file;
+
+enum DB_PATH = "app.db";
+enum BACKUP_DIR = "backups";
+enum UPLOAD_DIR = "uploads";
+
+void backupDatabase(HTTPServerRequest req, HTTPServerResponse res) {
+    string backupName = req.json["backup_name"].str;
+    string command = "sqlite3 " ~ DB_PATH ~ " .dump > " ~ BACKUP_DIR ~ "/" ~ backupName;
+    executeShell(command);
+}
+
+void upload(HTTPServerRequest req, HTTPServerResponse res) {
+    string filename = req.json["filename"].str;
+    string filePath = UPLOAD_DIR ~ "/" ~ filename;
+    write(filePath, "demo");
+}
+
+void login(HTTPServerRequest req, HTTPServerResponse res) {
+    string email = req.json["email"].str;
+    string sql = "SELECT id FROM users WHERE email = '" ~ email ~ "'";
+}""",
+            focus="security",
+        )
+    )
+
+    categories = {_bug_category(bug) for bug in review.bugs}
+    assert review.detected_language == "D"
+    assert {"sql_injection", "command_injection", "path_traversal"}.issubset(categories)
     assert review.risk_score == 100
 
 
