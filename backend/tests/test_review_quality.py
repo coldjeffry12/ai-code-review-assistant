@@ -441,6 +441,38 @@ def test_clojure_ring_compojure_code_auto_detects_clojure_not_sql():
     assert _detected_review_language("Auto", code) == "Clojure"
 
 
+def test_lua_openresty_code_auto_detects_lua_not_sql():
+    code = """local cjson = require "cjson"
+local sqlite3 = require "lsqlite3"
+local http = require "resty.http"
+
+local DB_PATH = "rental_platform.db"
+
+local function login()
+    ngx.req.read_body()
+    local body = cjson.decode(ngx.req.get_body_data())
+    local email = body.email
+    local sql = "SELECT id FROM users WHERE email = '" .. email .. "'"
+
+    local conn = sqlite3.open(DB_PATH)
+    for row in conn:nrows(sql) do
+        ngx.say(cjson.encode(row))
+        break
+    end
+end
+
+local routes = {
+    ["/login"] = login
+}
+
+local handler = routes[ngx.var.uri]
+if handler then
+    handler()
+end"""
+
+    assert _detected_review_language("Auto", code) == "Lua"
+
+
 def test_language_detection_prompt_uses_short_sample_for_large_code():
     code = "\n".join([f"line_{index}" for index in range(400)])
     prompt = _ai_language_detection_prompt(code)
@@ -616,6 +648,49 @@ def test_ai_sql_language_metadata_is_corrected_for_clojure_application_code():
     assert review.reviewed_language == "Clojure"
     assert review.language_detection_confidence == 98
     assert "Clojure" in review.language_detection_evidence
+
+
+def test_ai_sql_language_metadata_is_corrected_for_lua_openresty_application_code():
+    review = _review_from_ai_json(
+        {
+            "summary": "AI review completed. The code has SQL injection and command injection risks.",
+            "detected_language": "SQL",
+            "reviewed_language": "SQL",
+            "risk_score": 100,
+            "bugs": [
+                {
+                    "title": "SQL injection",
+                    "severity": "Critical",
+                    "explanation": "The query concatenates user input.",
+                    "suggested_fix": "Use parameterized queries.",
+                }
+            ],
+            "improvements": ["Validate route input."],
+            "test_cases": ["Test SQL injection payloads are rejected."],
+            "fixed_code": None,
+        },
+        ReviewRequest(
+            code="""local cjson = require "cjson"
+local sqlite3 = require "lsqlite3"
+local http = require "resty.http"
+
+local function login()
+    ngx.req.read_body()
+    local body = cjson.decode(ngx.req.get_body_data())
+    local sql = "SELECT id FROM users WHERE email = '" .. body.email .. "'"
+    local conn = sqlite3.open("app.db")
+    for row in conn:nrows(sql) do
+        ngx.say(cjson.encode(row))
+    end
+end""",
+            focus="security",
+        ),
+    )
+
+    assert review.detected_language == "Lua"
+    assert review.reviewed_language == "Lua"
+    assert review.language_detection_confidence == 98
+    assert "Lua" in review.language_detection_evidence
 
 
 def test_ai_sql_language_metadata_is_corrected_for_nim_application_code():

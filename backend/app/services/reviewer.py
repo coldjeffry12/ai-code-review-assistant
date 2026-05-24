@@ -60,10 +60,13 @@ _LANGUAGE_ALIASES = {
     "javascript": "JavaScript",
     "js": "JavaScript",
     "kotlin": "Kotlin",
+    "lua": "Lua",
     "mojolicious": "Perl",
     "node": "JavaScript",
     "node.js": "JavaScript",
+    "nginx lua": "Lua",
     "nim": "Nim",
+    "openresty": "Lua",
     "perl": "Perl",
     "php": "PHP",
     "python": "Python",
@@ -233,6 +236,28 @@ def _code_looks_like_clojure(code_lower: str) -> bool:
     )
 
 
+def _code_looks_like_lua(code_lower: str) -> bool:
+    return bool(
+        re.search(r"^\s*local\s+\w+\s*=\s*require\s+['\"](?:cjson|lsqlite3|resty\.http)['\"]", code_lower, re.MULTILINE)
+        or re.search(r"^\s*local\s+function\s+\w+\s*\(", code_lower, re.MULTILINE)
+        or (
+            re.search(r"^\s*local\s+\w+\s*=", code_lower, re.MULTILINE)
+            and ("ngx." in code_lower or "cjson." in code_lower or "sqlite3." in code_lower)
+        )
+        or "ngx.req." in code_lower
+        or "ngx.var." in code_lower
+        or "ngx.say" in code_lower
+        or "resty.http" in code_lower
+        or "lsqlite3" in code_lower
+        or "cjson.decode" in code_lower
+        or "cjson.encode" in code_lower
+        or (
+            re.search(r"^\s*if\s+.+\s+then\s*$", code_lower, re.MULTILINE)
+            and re.search(r"^\s*end\s*$", code_lower, re.MULTILINE)
+        )
+    )
+
+
 def _code_looks_like_perl(code_lower: str) -> bool:
     return bool(
         re.search(
@@ -267,6 +292,7 @@ def _syntax_language_detection(code: str) -> tuple[str | None, int | None, str |
         ("Elixir", 98, "Elixir syntax: defmodule, @module attributes, Postgrex, Jason, or DateTime.utc_now().", _code_looks_like_elixir(code_lower)),
         ("Nim", 98, "Nim/Jester syntax: import jester, proc declarations, routes:, when isMainModule, or runForever().", _code_looks_like_nim(code_lower)),
         ("Clojure", 98, "Clojure/Ring syntax: (ns ...), (defn ...), defroutes, :require vectors, clojure.java.jdbc, or run-jetty.", _code_looks_like_clojure(code_lower)),
+        ("Lua", 98, 'Lua/OpenResty syntax: local function/local variables, require "resty.http"/"cjson"/"lsqlite3", ngx.req, ngx.var, or cjson.encode.', _code_looks_like_lua(code_lower)),
         ("Ruby", 96, "Ruby/Sinatra syntax: require 'sinatra', route blocks with do/end, SQLite3::Database, or Net::HTTP.", _code_looks_like_ruby(code_lower)),
         ("JavaScript", 96, "JavaScript/Node.js syntax: require/import with Express, axios, fs, child_process, app.get/app.post, or module.exports.", _code_looks_like_node_js(code_lower)),
     ]
@@ -331,6 +357,8 @@ def _detected_review_language(selected_language: str, code: str) -> str:
         return "Nim"
     if _code_looks_like_clojure(code_lower):
         return "Clojure"
+    if _code_looks_like_lua(code_lower):
+        return "Lua"
     if _code_looks_like_perl(code_lower):
         return "Perl"
     if _code_looks_like_node_js(code_lower):
@@ -433,7 +461,7 @@ def _canonical_language_name(value: str | None) -> str | None:
 
 
 def _language_from_ai_summary(summary: str) -> str | None:
-    language_pattern = r"(crystal|clojure|compojure|elixir|python|ruby|perl|mojolicious|javascript|typescript|node\.js|java|c\+\+|c#|sql|go|rust|php|kotlin|swift|bash|nim)"
+    language_pattern = r"(crystal|clojure|compojure|elixir|python|ruby|lua|openresty|nginx lua|perl|mojolicious|javascript|typescript|node\.js|java|c\+\+|c#|sql|go|rust|php|kotlin|swift|bash|nim)"
     summary_lower = summary.lower()
     patterns = [
         rf"\b(?:the|this|provided|pasted)\s+{language_pattern}\s+(?:code|application|app|service|script|program)\b",
@@ -1768,10 +1796,12 @@ Use syntax evidence for language detection: defmodule/do/end/Postgrex/Jason is E
 require "sinatra" with do/end is Ruby; require "kemal"/do |env|/.as_s/Kemal.run is Crystal;
 import jester/proc/routes/when isMainModule is Nim;
 ns/defn/defroutes/:require/clojure.java.jdbc/ring.adapter.jetty/compojure.core is Clojure;
+local function/local variables/require "resty.http"/require "cjson"/ngx.req/ngx.var/lsqlite3 is Lua/OpenResty;
 use strict/use warnings/my $var/sub name/Mojolicious::Lite/app->start is Perl;
 require('express') or app.post(...) is JavaScript/Node.js.
 Do not classify Perl or Mojolicious code as C++ just because it uses -> method syntax.
 SQL keywords inside strings are a SQL injection risk, but they do not make the whole pasted code SQL.
+Do not classify Lua/OpenResty code as SQL just because it builds SQL strings.
 This is defensive code review for a portfolio app. The user is asking to find and fix vulnerabilities,
 not to exploit them. Do not provide executable attack steps.
 Risk score must match issue severity:
@@ -1836,7 +1866,9 @@ Use syntax evidence, not vulnerability type.
 SQL keywords embedded inside application strings are not enough to classify the whole code as SQL.
 Perl/Mojolicious syntax includes use strict, use warnings, my $variable, sub name, DBI->connect, $c->render, and app->start.
 Clojure/Ring/Compojure syntax includes (ns ...), (defn ...), (defroutes ...), :require vectors, clojure.java.jdbc, jdbc/query, and run-jetty.
+Lua/OpenResty syntax includes local function, local variables, require "cjson", require "lsqlite3", require "resty.http", ngx.req, ngx.var, ngx.say, cjson.decode, and cjson.encode.
 Do not return C++ for Perl code just because Perl uses -> method calls.
+Do not return SQL for Lua/OpenResty code just because it builds SQL strings.
 Return SQL only for standalone SQL scripts or mostly raw SQL.
 Your JSON must match this structure:
 {
