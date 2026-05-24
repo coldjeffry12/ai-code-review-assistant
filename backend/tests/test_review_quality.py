@@ -602,8 +602,8 @@ def test_ai_language_detection_overrides_local_hint():
         code="const express = require('express');",
     )
 
-    assert review.detected_language == "Ruby"
-    assert review.reviewed_language == "Ruby"
+    assert review.detected_language == "JavaScript"
+    assert review.reviewed_language == "JavaScript"
 
 
 def test_safe_retry_prompt_redacts_dangerous_literals():

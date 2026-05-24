@@ -44,6 +44,8 @@ function getLanguageRows(result: ReviewResponse) {
   const detectionSource =
     result.language_detection_source === 'ai'
       ? 'AI'
+      : result.language_detection_source === 'ai+syntax'
+        ? 'AI + syntax check'
       : result.language_detection_source === 'fallback'
         ? 'Fallback'
         : result.language_detection_source
@@ -52,6 +54,7 @@ function getLanguageRows(result: ReviewResponse) {
     ['Detected', result.detected_language],
     ['Reviewed as', result.reviewed_language],
     ['Detection', detectionSource],
+    ['Confidence', result.language_detection_confidence ? `${result.language_detection_confidence}%` : null],
   ].filter((row): row is [string, string] => Boolean(row[1]))
 }
 
@@ -187,6 +190,9 @@ function App() {
                   </dl>
                 )}
                 <p>{result.summary}</p>
+                {result.language_detection_evidence && (
+                  <p className="resultNote">Language evidence: {result.language_detection_evidence}</p>
+                )}
                 {result.cache_hit && (
                   <p className="resultNote">Returned instantly from cache because the language, focus, and code matched a previous review.</p>
                 )}

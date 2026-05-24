@@ -18,6 +18,8 @@ export type ReviewResponse = {
   detected_language?: string | null
   reviewed_language?: string | null
   language_detection_source?: string | null
+  language_detection_confidence?: number | null
+  language_detection_evidence?: string | null
   cache_hit: boolean
   similarity_used?: number | null
 }

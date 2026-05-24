@@ -239,6 +239,54 @@ def _code_looks_like_node_js(code_lower: str) -> bool:
     )
 
 
+def _syntax_language_detection(code: str) -> tuple[str | None, int | None, str | None]:
+    code_lower = code.lower()
+
+    strong_checks: list[tuple[str, int, str, bool]] = [
+        ("Crystal", 98, 'Crystal/Kemal syntax: require "kemal", do |env|, .as_s/.as_f, or Kemal.run.', _code_looks_like_crystal(code_lower)),
+        ("Perl", 98, "Perl/Mojolicious syntax: use strict, my $variable, sub, DBI->connect, $c->render, or app->start.", _code_looks_like_perl(code_lower)),
+        ("Elixir", 98, "Elixir syntax: defmodule, @module attributes, Postgrex, Jason, or DateTime.utc_now().", _code_looks_like_elixir(code_lower)),
+        ("Nim", 98, "Nim/Jester syntax: import jester, proc declarations, routes:, when isMainModule, or runForever().", _code_looks_like_nim(code_lower)),
+        ("Ruby", 96, "Ruby/Sinatra syntax: require 'sinatra', route blocks with do/end, SQLite3::Database, or Net::HTTP.", _code_looks_like_ruby(code_lower)),
+        ("JavaScript", 96, "JavaScript/Node.js syntax: require/import with Express, axios, fs, child_process, app.get/app.post, or module.exports.", _code_looks_like_node_js(code_lower)),
+    ]
+
+    for language, confidence, evidence, matched in strong_checks:
+        if matched:
+            return language, confidence, evidence
+
+    if re.search(r"\binterface\s+\w+|\btype\s+\w+\s*=|:\s*(string|number|boolean)\b|import\s+type\b", code_lower):
+        return "TypeScript", 92, "TypeScript syntax: interfaces, type aliases, typed parameters, or import type."
+    if re.search(r"#include\s*<|std::|\bnullptr\b|\bint\s+main\s*\(", code_lower):
+        return "C++", 93, "C++ syntax: #include, std::, nullptr, or int main()."
+    if re.search(r"\b(public|private|protected)\s+class\b|\bsystem\.out\.println\b|\bpublic\s+static\s+void\s+main\b", code_lower):
+        return "Java", 92, "Java syntax: public/private class, System.out.println, or public static void main."
+    if re.search(r"\busing\s+system\b|\bnamespace\s+\w+|\bconsole\.writeline\b", code_lower):
+        return "C#", 92, "C# syntax: using System, namespace, or Console.WriteLine."
+    if re.search(r"^\s*def\s+\w+\s*\(|^\s*import\s+\w+|^\s*from\s+\w+\s+import", code_lower, re.MULTILINE):
+        return "Python", 92, "Python syntax: def, import, or from ... import."
+    if re.search(r"^\s*package\s+main\b|\bfunc\s+\w+\s*\(|\bfmt\.println\b|\bgo\s+func\b", code_lower, re.MULTILINE):
+        return "Go", 92, "Go syntax: package main, func declarations, fmt.Println, or goroutines."
+    if re.search(r"\bfn\s+main\s*\(|\blet\s+mut\b|\bprintln!\s*\(|\bmatch\s+\w+\s*\{", code_lower):
+        return "Rust", 92, "Rust syntax: fn main, let mut, println!, or match blocks."
+    if re.search(r"<\?php|\buse\s+\w+(?:\\\w+)+;|\bfunction\s+\w+\s*\([^)]*\)\s*\{.*\$\w+", code_lower, re.DOTALL):
+        return "PHP", 92, "PHP syntax: <?php, namespaced use statements, function declarations, or $variables."
+    if re.search(r"\bfun\s+main\s*\(|\bdata\s+class\b|\bval\s+\w+|\bvar\s+\w+|\bprintln\s*\(", code_lower):
+        return "Kotlin", 88, "Kotlin syntax: fun main, data class, val/var declarations, or println."
+    if re.search(r"\bimport\s+swiftui\b|\bfunc\s+\w+\s*\(|\blet\s+\w+\s*=|\bvar\s+\w+\s*=", code_lower):
+        return "Swift", 86, "Swift syntax: import SwiftUI, func declarations, let, or var."
+    if re.search(r"^\s*#!/(?:usr/bin/env\s+)?(?:bash|sh)\b|^\s*(echo|grep|awk|sed|curl)\b|\$\{?\w+\}?", code_lower, re.MULTILINE):
+        return "Bash", 82, "Shell syntax: bash/shebang, shell commands, or environment variable expansion."
+    if re.search(r"\b(select|insert|update|delete)\b", code_lower) and not re.search(
+        r"^\s*(def|function|sub|proc|class|import|require|use|package|public|private|post|get)\b",
+        code_lower,
+        re.MULTILINE,
+    ):
+        return "SQL", 85, "Standalone SQL keywords without surrounding application-language syntax."
+
+    return None, None, None
+
+
 def _selected_language_matches_code(language: str | None, code_lower: str) -> bool:
     if _is_javascript_language(language) and _code_looks_like_node_js(code_lower):
         return True
@@ -250,6 +298,9 @@ def _detected_review_language(selected_language: str, code: str) -> str:
     selected = selected_language.strip() or "Plain Text"
     normalized_selected = selected.lower()
 
+    syntax_language, _, _ = _syntax_language_detection(code)
+    if syntax_language:
+        return syntax_language
     if _code_looks_like_crystal(code_lower):
         return "Crystal"
     if _code_looks_like_ruby(code_lower):
@@ -264,7 +315,7 @@ def _detected_review_language(selected_language: str, code: str) -> str:
         return "JavaScript"
     if re.search(r"\b(public|private|protected)\s+class\b|\bsystem\.out\.println\b|\bstring\[\]\s+args\b|\.getbytes\s*\(", code_lower):
         return "Java"
-    if re.search(r"#include\s*<|std::|->\w+\s*\(|\bnullptr\b", code_lower):
+    if re.search(r"#include\s*<|std::|\bnullptr\b", code_lower):
         return "C++"
     if re.search(r"\binterface\s+\w+|\btype\s+\w+\s*=|:\s*(string|number|boolean)\b", code_lower) and normalized_selected in {"typescript", "ts", "react"}:
         return "TypeScript"
@@ -383,7 +434,7 @@ def _ai_language_metadata(
     detected = _canonical_language_name(review.detected_language) or review.detected_language
     reviewed = _canonical_language_name(review.reviewed_language) or review.reviewed_language
     summary_language = _language_from_ai_summary(review.summary)
-    syntax_language = _detected_review_language(selected_language or "Auto", code or "") if code else None
+    syntax_language, syntax_confidence, _ = _syntax_language_detection(code or "") if code else (None, None, None)
 
     if summary_language and detected and _canonical_language_name(detected) != summary_language:
         detected = summary_language
@@ -391,6 +442,15 @@ def _ai_language_metadata(
     elif summary_language and not detected:
         detected = summary_language
         reviewed = reviewed or summary_language
+    elif (
+        syntax_language
+        and syntax_confidence
+        and syntax_confidence >= 92
+        and detected
+        and _canonical_language_name(detected) != syntax_language
+    ):
+        detected = syntax_language
+        reviewed = syntax_language
     elif detected == "SQL" and syntax_language and syntax_language not in {"SQL", "Auto", "Plain Text"}:
         detected = syntax_language
         reviewed = syntax_language
@@ -764,10 +824,22 @@ def _normalize_review_response(
 ) -> ReviewResponse:
     code_lower = (code or "").lower()
     selected_language_value, detected_language_value, reviewed_language_value = _language_metadata(selected_language, code)
+    syntax_language, syntax_confidence, syntax_evidence = _syntax_language_detection(code or "")
     if review.used_ai:
         ai_detected_language, ai_reviewed_language = _ai_language_metadata(review, code, selected_language)
         detected_language_value = ai_detected_language or detected_language_value
         reviewed_language_value = ai_reviewed_language or reviewed_language_value
+    if syntax_language and detected_language_value == syntax_language:
+        language_confidence = review.language_detection_confidence or syntax_confidence
+        language_evidence = review.language_detection_evidence or syntax_evidence
+    else:
+        language_confidence = review.language_detection_confidence or (70 if review.used_ai and detected_language_value else None)
+        language_evidence = review.language_detection_evidence or (
+            "AI language detection based on the pasted code." if review.used_ai and detected_language_value else None
+        )
+    language_source = review.language_detection_source or ("ai" if review.used_ai else "fallback")
+    if review.used_ai and syntax_language and detected_language_value == syntax_language:
+        language_source = "ai+syntax"
     normalized_bugs: list[BugFinding] = []
 
     for bug in review.bugs:
@@ -818,7 +890,9 @@ def _normalize_review_response(
         selected_language=selected_language_value or review.selected_language,
         detected_language=detected_language_value or review.detected_language,
         reviewed_language=reviewed_language_value or review.reviewed_language,
-        language_detection_source=review.language_detection_source or ("ai" if review.used_ai else "fallback"),
+        language_detection_source=language_source,
+        language_detection_confidence=language_confidence,
+        language_detection_evidence=language_evidence,
         cache_hit=review.cache_hit,
         similarity_used=review.similarity_used,
     )
@@ -1555,6 +1629,13 @@ def _review_from_ai_json(
         fixed_code = str(fixed_code).strip() or None
     detected_language = detected_language_override or str(parsed.get("detected_language") or "").strip() or None
     reviewed_language = detected_language_override or str(parsed.get("reviewed_language") or detected_language or "").strip() or None
+    confidence = parsed.get("language_detection_confidence")
+    try:
+        confidence = int(confidence) if confidence is not None else None
+    except (TypeError, ValueError):
+        confidence = None
+    if confidence is not None:
+        confidence = max(0, min(confidence, 100))
 
     return _normalize_review_response(ReviewResponse(
         summary=str(parsed.get("summary") or "AI review completed.").strip(),
@@ -1568,6 +1649,8 @@ def _review_from_ai_json(
         detected_language=detected_language,
         reviewed_language=reviewed_language,
         language_detection_source="ai" if detected_language else None,
+        language_detection_confidence=confidence,
+        language_detection_evidence=str(parsed.get("language_detection_evidence") or "").strip() or None,
     ), payload.language if payload else None, payload.code if payload else None)
 
 
@@ -1613,6 +1696,8 @@ def _review_from_ai_text(content: str, payload: ReviewRequest, detected_language
         detected_language=detected_language_override,
         reviewed_language=detected_language_override,
         language_detection_source="ai" if detected_language_override else None,
+        language_detection_confidence=70 if detected_language_override else None,
+        language_detection_evidence="AI returned malformed JSON, so backend syntax checks repaired the language metadata.",
     ), payload.language, payload.code)
 
 
@@ -1703,6 +1788,8 @@ Your JSON must match this structure:
   "summary": "short summary",
   "detected_language": "language detected from the pasted code",
   "reviewed_language": "language used for the review",
+  "language_detection_confidence": 0,
+  "language_detection_evidence": "brief syntax evidence used to identify the language",
   "risk_score": 0,
   "bugs": [
     {
