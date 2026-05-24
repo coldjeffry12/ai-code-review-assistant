@@ -30,7 +30,9 @@ _JAVASCRIPT_LANGUAGES = {"javascript", "js", "node", "node.js", "express", "type
 _NODE_MARKERS = (
     "require(",
     "axios",
-    "fs.",
+    "fs.writefile",
+    "fs.promises",
+    "fs.readfile",
     "jwt.",
     "jsonwebtoken",
     "child_process",
@@ -100,6 +102,7 @@ _LANGUAGE_ALIASES = {
     "visual basic": "VB.NET",
     "yaml": "YAML",
     "yml": "YAML",
+    "zig": "Zig",
 }
 
 _LANGUAGE_SIGNATURES: list[dict[str, Any]] = [
@@ -294,6 +297,22 @@ _LANGUAGE_SIGNATURES: list[dict[str, Any]] = [
             (r"\bdictionary\s+new\b", 3),
             (r"\byourself\b", 2),
             (r"\bfilestream\b|\bosprocess\s+command:|\bznclient\s+new\b", 4),
+        ],
+    },
+    {
+        "language": "Zig",
+        "confidence": 98,
+        "evidence": "Zig syntax: @import(\"std\"), pub fn/fn with ! error unions, []const u8 slices, std.mem.Allocator, try, and .{ } literals.",
+        "threshold": 5,
+        "patterns": [
+            (r"@import\s*\(\s*\"std\"\s*\)", 6),
+            (r"\bpub\s+fn\s+\w+\s*\([^)]*\)\s*!?\s*\w*", 4),
+            (r"\bfn\s+\w+\s*\([^)]*\)\s*!\s*\w+", 4),
+            (r"\[\]\s*const\s+u8", 4),
+            (r"\bstd\.mem\.allocator\b", 4),
+            (r"\btry\s+std\.", 3),
+            (r"\.\{\s*[^}]*\}", 2),
+            (r"\bstd\.process\.child\.run\b", 4),
         ],
     },
     {
@@ -535,7 +554,12 @@ def _code_looks_like_perl(code_lower: str) -> bool:
 
 
 def _code_looks_like_node_js(code_lower: str) -> bool:
-    if _code_looks_like_ruby(code_lower) or _code_looks_like_ocaml(code_lower) or _code_looks_like_d(code_lower):
+    if (
+        _code_looks_like_ruby(code_lower)
+        or _code_looks_like_ocaml(code_lower)
+        or _code_looks_like_d(code_lower)
+        or _code_looks_like_zig(code_lower)
+    ):
         return False
     return any(marker in code_lower for marker in _NODE_MARKERS) or bool(
         re.search(r"\b(require|import)\s*\(?\s*['\"](?:express|axios|fs|jsonwebtoken|child_process)['\"]", code_lower)
@@ -596,6 +620,18 @@ def _code_looks_like_smalltalk(code_lower: str) -> bool:
     )
 
 
+def _code_looks_like_zig(code_lower: str) -> bool:
+    return bool(
+        '@import("std")' in code_lower
+        or "@import('std')" in code_lower
+        or re.search(r"\[\]\s*const\s+u8", code_lower)
+        or "std.mem.allocator" in code_lower
+        or "std.process.child.run" in code_lower
+        or "std.fmt.allocprint" in code_lower
+        or re.search(r"\bpub\s+fn\s+\w+\s*\([^)]*\)\s*!?\s*\w*", code_lower)
+    )
+
+
 def _signature_language_detection(code_lower: str) -> tuple[str | None, int | None, str | None]:
     best_language: str | None = None
     best_confidence: int | None = None
@@ -631,6 +667,7 @@ def _syntax_language_detection(code: str) -> tuple[str | None, int | None, str |
         ("Groovy", 98, "Groovy syntax: groovy.json/groovy.sql imports, def variables, static methods, GString interpolation, map literals, or command.execute().", _code_looks_like_groovy(code_lower)),
         ("D", 98, "D/vibe.d syntax: import vibe.d/std.*, enum constants, HTTPServerRequest/HTTPServerResponse, URLRouter, listenHTTP, runApplication, or ~ string concatenation.", _code_looks_like_d(code_lower)),
         ("Smalltalk", 98, "Smalltalk syntax: Object subclass:, class >> methods, := assignment, ^ returns, | local variables |, Dictionary new cascades, or message keywords ending with colon.", _code_looks_like_smalltalk(code_lower)),
+        ("Zig", 98, 'Zig syntax: @import("std"), pub fn/fn with ! error unions, []const u8 slices, std.mem.Allocator, try, and .{ } literals.', _code_looks_like_zig(code_lower)),
         ("Ruby", 96, "Ruby/Sinatra syntax: require 'sinatra', route blocks with do/end, SQLite3::Database, or Net::HTTP.", _code_looks_like_ruby(code_lower)),
         ("JavaScript", 96, "JavaScript/Node.js syntax: require/import with Express, axios, fs, child_process, app.get/app.post, or module.exports.", _code_looks_like_node_js(code_lower)),
     ]
@@ -803,7 +840,7 @@ def _canonical_language_name(value: str | None) -> str | None:
 
 
 def _language_from_ai_summary(summary: str) -> str | None:
-    language_pattern = r"(crystal|clojure|compojure|elixir|groovy|dlang|d|smalltalk|python|ruby|lua|openresty|nginx lua|perl|mojolicious|ocaml|javascript|typescript|node\.js|java|c\+\+|c#|sql|go|rust|php|kotlin|swift|bash|nim|dart|flutter|scala|haskell|erlang|f#|fsharp|objective-c|objc|vb\.net|visual basic|r|julia|solidity|terraform|hcl|dockerfile|yaml|yml)"
+    language_pattern = r"(crystal|clojure|compojure|elixir|groovy|dlang|d|smalltalk|zig|python|ruby|lua|openresty|nginx lua|perl|mojolicious|ocaml|javascript|typescript|node\.js|java|c\+\+|c#|sql|go|rust|php|kotlin|swift|bash|nim|dart|flutter|scala|haskell|erlang|f#|fsharp|objective-c|objc|vb\.net|visual basic|r|julia|solidity|terraform|hcl|dockerfile|yaml|yml)"
     summary_lower = summary.lower()
     patterns = [
         rf"\b(?:the|this|provided|pasted)\s+{language_pattern}\s+(?:code|application|app|service|script|program)\b",
@@ -1334,7 +1371,7 @@ def _has_hardcoded_secret(code_lower: str) -> bool:
 def _has_unsafe_sql_construction(code_lower: str) -> bool:
     has_sql = re.search(r"\b(select|insert|update|delete)\b", code_lower)
     has_concat_or_format = re.search(
-        r"(\+\s*\w+|~\s*\w+|\.\.\s*[\w.]+|\^\s*[\w(]|f[\"']|`[^`]*\$\{|\$\{|#\{|\.format\s*\(|%\s*\(|req\.(?:body|query|params)|params\s*\[)",
+        r"(\+\s*\w+|~\s*\w+|\.\.\s*[\w.]+|\^\s*[\w(]|f[\"']|`[^`]*\$\{|\$\{|#\{|\.format\s*\(|std\.fmt\.allocprint\s*\(|%\s*\(|req\.(?:body|query|params)|params\s*\[)",
         code_lower,
         re.DOTALL,
     )
@@ -1355,7 +1392,7 @@ def _has_unsafe_path_construction(code_lower: str) -> bool:
     has_file_write = has_file_write or re.search(r"\b(open_out|open_in)\s+\w+", code_lower)
     has_file_write = has_file_write or "fs.writefile" in code_lower or "fs.promises.writefile" in code_lower
     has_file_write = has_file_write or re.search(r"\bnew\s+file\s*\(|\.text\s*=", code_lower)
-    has_file_write = has_file_write or re.search(r"\b(write|readtext)\s*\(", code_lower)
+    has_file_write = has_file_write or re.search(r"\b(write|writefile|readtext|readfilealloc)\s*\(", code_lower)
     has_file_write = has_file_write or "filestream" in code_lower
     has_user_filename = re.search(r"\b(filename|file_name|path|upload|user_input|email)\b", code_lower) or bool({"filename", "file_name", "path", "email", "upload"} & user_vars)
     has_path_join = "os.path.join" in code_lower or "pathlib.path" in code_lower or "path.join" in code_lower or "/" in code_lower
@@ -1386,7 +1423,7 @@ def _has_shell_command_injection(code_lower: str) -> bool:
     }
     has_shell_exec = bool(
         re.search(
-            r"(os\.execute|sys\.command|system\s*\(|execmd\s*\(|executeshell\s*\(|system\.cmd\s*\(|system\.cmd|system\.cmd\(|exec_cmd\s*\(|subprocess\.|:\s*os\.cmd|\.execute\s*\(\s*\)|\bsh\s+\"sh\"\s+\"-c\")",
+            r"(os\.execute|sys\.command|system\s*\(|execmd\s*\(|executeshell\s*\(|system\.cmd\s*\(|system\.cmd|system\.cmd\(|exec_cmd\s*\(|std\.process\.child\.run|subprocess\.|:\s*os\.cmd|\.execute\s*\(\s*\)|\bsh\s+\"sh\"\s+\"-c\")",
             code_lower,
         )
         or "osprocess command:" in code_lower
@@ -1401,6 +1438,8 @@ def _has_shell_command_injection(code_lower: str) -> bool:
     shell_calls = re.findall(r"(?:os\.execute|system|execmd|executeshell|exec_cmd|system\.cmd|\.execute)\s*\(([^)\n]+)", code_lower)
     shell_calls.extend(re.findall(r"osprocess\s+command:\s*([^\n.]+)", code_lower))
     suspicious_parts = command_assignments + shell_calls
+    if "std.process.child.run" in code_lower and re.search(r"[\"']sh[\"']\s*,\s*[\"']-c[\"']", code_lower):
+        return True
     return any(
         any(marker in part for marker in ["..", "+", "~", ",", "#{", "${", "sh -c"])
         or _contains_user_input(part, user_vars)
@@ -2215,11 +2254,13 @@ open Lwt/open Opium/let bindings/|> pipelines/>>= fun/App.post/App.get is OCaml/
 import groovy.*/groovy.sql.Sql/def variables/GString ${...}/command.execute()/GroovyShell is Groovy;
 import vibe.d/import std.* with semicolons/HTTPServerRequest/HTTPServerResponse/URLRouter/listenHTTP/runApplication/~ string concatenation is D/vibe.d;
 Object subclass:/class >> method/:= assignment/^ return/Dictionary new cascades/FileStream/OSProcess command:/ZnClient new is Smalltalk.
+@import("std")/pub fn/fn ... !Type/[]const u8/std.mem.Allocator/std.process.Child.run/std.fs.cwd()/try is Zig.
 use strict/use warnings/my $var/sub name/Mojolicious::Lite/app->start is Perl;
 pragma solidity/contract/mapping/msg.sender is Solidity; resource/provider/variable blocks are Terraform/HCL;
 package:flutter/runApp/Widget build is Dart/Flutter; -module/-export/function -> clauses are Erlang;
 require('express') or app.post(...) is JavaScript/Node.js.
 Do not classify D/vibe.d code as JavaScript just because it uses router.post/router.get.
+Do not classify Zig code as JavaScript just because it contains std.fs.cwd() or fs. syntax.
 Do not classify Perl or Mojolicious code as C++ just because it uses -> method syntax.
 SQL keywords inside strings are a SQL injection risk, but they do not make the whole pasted code SQL.
 Do not classify Smalltalk code as SQL just because it builds SQL strings.
@@ -2293,11 +2334,13 @@ OCaml/Opium syntax includes open Lwt, open Opium, let bindings, |> pipelines, >>
 Groovy syntax includes import groovy.*, groovy.sql.Sql, def variables, static methods, GString ${...}, command.execute(), and GroovyShell.
 D/vibe.d syntax includes import vibe.d;, import std.*;, HTTPServerRequest/HTTPServerResponse, URLRouter, listenHTTP, runApplication, enum constants, and ~ string concatenation.
 Smalltalk syntax includes Object subclass:, class >> method definitions, := assignment, ^ returns, | local variables |, Dictionary new cascades with semicolons, FileStream, OSProcess command:, ZnClient new, and message keywords ending with colon.
+Zig syntax includes @import("std"), pub fn/fn, ! error unions, []const u8, std.mem.Allocator, try, std.process.Child.run, std.fs.cwd(), and .{ } struct literals.
 Solidity syntax includes pragma solidity, contract, mapping, address, msg.sender, and public/external functions.
 Terraform/HCL syntax includes resource/provider/variable blocks, terraform blocks, and var.* references.
 Dart/Flutter syntax includes package:flutter imports, runApp, Widget build, StatelessWidget, and StatefulWidget.
 Erlang syntax includes -module(...), -export([...]), function clauses with ->, receive, and spawn.
 Do not return JavaScript for D/vibe.d code just because it uses router.post/router.get.
+Do not return JavaScript for Zig code just because it contains std.fs.cwd() or fs. syntax.
 Do not return C++ for Perl code just because Perl uses -> method calls.
 Do not return SQL for Smalltalk code just because it builds SQL strings.
 Do not return SQL for Lua/OpenResty code just because it builds SQL strings.

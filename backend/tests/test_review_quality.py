@@ -356,6 +356,34 @@ void main() {
     assert _detected_review_language("Auto", code) == "D"
 
 
+def test_zig_code_auto_detects_zig_not_javascript():
+    code = """const std = @import("std");
+
+const ADMIN_TOKEN = "demo-admin-token";
+
+const Request = struct {
+    body: []const u8,
+};
+
+fn login(allocator: std.mem.Allocator, req: Request) !void {
+    const email = try parseField(allocator, req.body, "email");
+    const sql = try std.fmt.allocPrint(
+        allocator,
+        "SELECT id FROM users WHERE email = '{s}'",
+        .{email},
+    );
+    _ = sql;
+}
+
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const allocator = gpa.allocator();
+    _ = allocator;
+}"""
+
+    assert _detected_review_language("Auto", code) == "Zig"
+
+
 def test_smalltalk_code_auto_detects_smalltalk_not_sql():
     code = """Object subclass: #ClinicInsuranceService
     instanceVariableNames: ''
@@ -762,6 +790,51 @@ void login(HTTPServerRequest req, HTTPServerResponse res) {
     categories = {_bug_category(bug) for bug in review.bugs}
     assert review.detected_language == "D"
     assert {"sql_injection", "command_injection", "path_traversal"}.issubset(categories)
+    assert review.risk_score == 100
+
+
+def test_zig_fallback_detects_sql_command_path_and_raw_card_risks():
+    review = _fallback_review(
+        ReviewRequest(
+            code="""const std = @import("std");
+
+const PAYMENT_SECRET = "demo-payment-secret";
+const UPLOAD_DIR = "uploads";
+
+fn payOrder(allocator: std.mem.Allocator, req: Request) !void {
+    const email = try parseField(allocator, req.body, "email");
+    const card_number = try parseField(allocator, req.body, "card_number");
+    const backup_name = try parseField(allocator, req.body, "backup_name");
+    const filename = try parseField(allocator, req.body, "filename");
+
+    const sql = try std.fmt.allocPrint(
+        allocator,
+        "SELECT id FROM users WHERE email = '{s}'",
+        .{email},
+    );
+
+    const command = try std.fmt.allocPrint(
+        allocator,
+        "sqlite3 app.db .dump > backups/{s}",
+        .{backup_name},
+    );
+
+    _ = try std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &[_][]const u8{ "sh", "-c", command },
+    });
+
+    const file_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ UPLOAD_DIR, filename });
+    try std.fs.cwd().writeFile(.{ .sub_path = file_path, .data = card_number });
+    _ = sql;
+}""",
+            focus="security",
+        )
+    )
+
+    categories = {_bug_category(bug) for bug in review.bugs}
+    assert review.detected_language == "Zig"
+    assert {"sql_injection", "hardcoded_secret", "command_injection", "path_traversal", "raw_card"}.issubset(categories)
     assert review.risk_score == 100
 
 
