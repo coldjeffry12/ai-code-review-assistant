@@ -55,6 +55,7 @@ _LANGUAGE_ALIASES = {
     "elixir": "Elixir",
     "go": "Go",
     "golang": "Go",
+    "groovy": "Groovy",
     "dart": "Dart",
     "dockerfile": "Dockerfile",
     "erlang": "Erlang",
@@ -242,6 +243,22 @@ _LANGUAGE_SIGNATURES: list[dict[str, Any]] = [
             (r"\bmatch\s+.+\s+with\b", 3),
             (r"^\s*let\s+\w+[^=]*=", 2),
             (r"`assoc\s*\[", 3),
+        ],
+    },
+    {
+        "language": "Groovy",
+        "confidence": 98,
+        "evidence": "Groovy syntax: groovy.json/groovy.sql imports, def variables, static methods, GString interpolation, map literals, or command.execute().",
+        "threshold": 5,
+        "patterns": [
+            (r"^\s*import\s+groovy\.", 6),
+            (r"^\s*import\s+groovy\.sql\.sql\b", 6),
+            (r"\bclass\s+\w+\s*\{", 2),
+            (r"\bstatic\s+(?:map|string|sql)\s+\w+\s*\(", 4),
+            (r"\bdef\s+\w+\s*=", 3),
+            (r"\$\{[^}]+\}", 3),
+            (r"\bnew\s+groovyshell\s*\(", 5),
+            (r"\.execute\s*\(\s*\)", 4),
         ],
     },
     {
@@ -503,6 +520,18 @@ def _code_looks_like_ocaml(code_lower: str) -> bool:
     )
 
 
+def _code_looks_like_groovy(code_lower: str) -> bool:
+    return bool(
+        re.search(r"^\s*import\s+groovy\.", code_lower, re.MULTILINE)
+        or "groovy.sql.sql" in code_lower
+        or "groovy.json." in code_lower
+        or re.search(r"\bstatic\s+(?:map|string|sql)\s+\w+\s*\(", code_lower)
+        or re.search(r"^\s*def\s+\w+\s*=", code_lower, re.MULTILINE)
+        and ("${" in code_lower or ".execute()" in code_lower or "new file(" in code_lower)
+        or "new groovyshell(" in code_lower
+    )
+
+
 def _signature_language_detection(code_lower: str) -> tuple[str | None, int | None, str | None]:
     best_language: str | None = None
     best_confidence: int | None = None
@@ -535,6 +564,7 @@ def _syntax_language_detection(code: str) -> tuple[str | None, int | None, str |
         ("Clojure", 98, "Clojure/Ring syntax: (ns ...), (defn ...), defroutes, :require vectors, clojure.java.jdbc, or run-jetty.", _code_looks_like_clojure(code_lower)),
         ("Lua", 98, 'Lua/OpenResty syntax: local function/local variables, require "resty.http"/"cjson"/"lsqlite3", ngx.req, ngx.var, or cjson.encode.', _code_looks_like_lua(code_lower)),
         ("OCaml", 98, "OCaml/Opium syntax: open Lwt/Opium, let bindings, |> pipelines, >>= Lwt binds, variant matches, or App.post/App.get routes.", _code_looks_like_ocaml(code_lower)),
+        ("Groovy", 98, "Groovy syntax: groovy.json/groovy.sql imports, def variables, static methods, GString interpolation, map literals, or command.execute().", _code_looks_like_groovy(code_lower)),
         ("Ruby", 96, "Ruby/Sinatra syntax: require 'sinatra', route blocks with do/end, SQLite3::Database, or Net::HTTP.", _code_looks_like_ruby(code_lower)),
         ("JavaScript", 96, "JavaScript/Node.js syntax: require/import with Express, axios, fs, child_process, app.get/app.post, or module.exports.", _code_looks_like_node_js(code_lower)),
     ]
@@ -645,7 +675,7 @@ def _should_skip_ai_retry(exc: Exception) -> bool:
     message = str(exc).lower()
     return any(
         marker in error_type or marker in message
-        for marker in ["timeout", "ratelimit", "rate limit", "429", "quota", "insufficient_quota"]
+        for marker in ["ratelimit", "rate limit", "429", "quota", "insufficient_quota", "billing"]
     )
 
 
@@ -707,7 +737,7 @@ def _canonical_language_name(value: str | None) -> str | None:
 
 
 def _language_from_ai_summary(summary: str) -> str | None:
-    language_pattern = r"(crystal|clojure|compojure|elixir|python|ruby|lua|openresty|nginx lua|perl|mojolicious|ocaml|javascript|typescript|node\.js|java|c\+\+|c#|sql|go|rust|php|kotlin|swift|bash|nim|dart|flutter|scala|haskell|erlang|f#|fsharp|objective-c|objc|vb\.net|visual basic|r|julia|solidity|terraform|hcl|dockerfile|yaml|yml)"
+    language_pattern = r"(crystal|clojure|compojure|elixir|groovy|python|ruby|lua|openresty|nginx lua|perl|mojolicious|ocaml|javascript|typescript|node\.js|java|c\+\+|c#|sql|go|rust|php|kotlin|swift|bash|nim|dart|flutter|scala|haskell|erlang|f#|fsharp|objective-c|objc|vb\.net|visual basic|r|julia|solidity|terraform|hcl|dockerfile|yaml|yml)"
     summary_lower = summary.lower()
     patterns = [
         rf"\b(?:the|this|provided|pasted)\s+{language_pattern}\s+(?:code|application|app|service|script|program)\b",
@@ -1235,7 +1265,7 @@ def _has_hardcoded_secret(code_lower: str) -> bool:
 def _has_unsafe_sql_construction(code_lower: str) -> bool:
     has_sql = re.search(r"\b(select|insert|update|delete)\b", code_lower)
     has_concat_or_format = re.search(
-        r"(\+\s*\w+|\.\.\s*[\w.]+|\^\s*[\w(]|f[\"']|`[^`]*\$\{|#\{|\.format\s*\(|%\s*\(|req\.(?:body|query|params)|params\s*\[)",
+        r"(\+\s*\w+|\.\.\s*[\w.]+|\^\s*[\w(]|f[\"']|`[^`]*\$\{|\$\{|#\{|\.format\s*\(|%\s*\(|req\.(?:body|query|params)|params\s*\[)",
         code_lower,
         re.DOTALL,
     )
@@ -1251,6 +1281,7 @@ def _has_unsafe_path_construction(code_lower: str) -> bool:
     has_file_write = re.search(r"\b(open|open_out|open_in|write_text|write_bytes|io\.open)\s*\(", code_lower) or ".save(" in code_lower
     has_file_write = has_file_write or re.search(r"\b(open_out|open_in)\s+\w+", code_lower)
     has_file_write = has_file_write or "fs.writefile" in code_lower or "fs.promises.writefile" in code_lower
+    has_file_write = has_file_write or re.search(r"\bnew\s+file\s*\(|\.text\s*=", code_lower)
     has_user_filename = re.search(r"\b(filename|file_name|path|upload|user_input|email)\b", code_lower) or bool({"filename", "file_name", "path", "email", "upload"} & user_vars)
     has_path_join = "os.path.join" in code_lower or "pathlib.path" in code_lower or "path.join" in code_lower or "/" in code_lower
     return bool(has_file_write and has_user_filename and has_path_join)
@@ -1280,7 +1311,7 @@ def _has_shell_command_injection(code_lower: str) -> bool:
     }
     has_shell_exec = bool(
         re.search(
-            r"(os\.execute|sys\.command|system\s*\(|execmd\s*\(|system\.cmd\s*\(|system\.cmd|system\.cmd\(|exec_cmd\s*\(|subprocess\.|:\s*os\.cmd|\bsh\s+\"sh\"\s+\"-c\")",
+            r"(os\.execute|sys\.command|system\s*\(|execmd\s*\(|system\.cmd\s*\(|system\.cmd|system\.cmd\(|exec_cmd\s*\(|subprocess\.|:\s*os\.cmd|\.execute\s*\(\s*\)|\bsh\s+\"sh\"\s+\"-c\")",
             code_lower,
         )
     )
@@ -1291,7 +1322,7 @@ def _has_shell_command_injection(code_lower: str) -> bool:
         r"(?:local\s+|let\s+|my\s+|const\s+|var\s+|final\s+)?\w*command\w*\s*=\s*([^;\n]+)",
         code_lower,
     )
-    shell_calls = re.findall(r"(?:os\.execute|system|execmd|exec_cmd|system\.cmd)\s*\(([^)\n]+)", code_lower)
+    shell_calls = re.findall(r"(?:os\.execute|system|execmd|exec_cmd|system\.cmd|\.execute)\s*\(([^)\n]+)", code_lower)
     suspicious_parts = command_assignments + shell_calls
     return any(
         any(marker in part for marker in ["..", "+", "#{", "${", "sh -c"])
@@ -1806,6 +1837,17 @@ def _fallback_review(payload: ReviewRequest, reason: str | None = None) -> Revie
         )
         risk_score += 35
 
+    if re.search(r"\bgroovyshell\s*\(|\.evaluate\s*\(", code_lower):
+        bugs.append(
+            BugFinding(
+                title="Unsafe dynamic Groovy execution",
+                severity="Critical",
+                explanation="The code evaluates file or request-controlled content dynamically, which can execute arbitrary code.",
+                suggested_fix="Do not evaluate untrusted Groovy scripts. Use a strict parser, schema validation, or a signed allow-list of configuration files.",
+            )
+        )
+        risk_score += 40
+
     if is_javascript_review and ("innerHTML" in code or "dangerouslySetInnerHTML" in code):
         bugs.append(
             BugFinding(
@@ -2093,6 +2135,7 @@ import jester/proc/routes/when isMainModule is Nim;
 ns/defn/defroutes/:require/clojure.java.jdbc/ring.adapter.jetty/compojure.core is Clojure;
 local function/local variables/require "resty.http"/require "cjson"/ngx.req/ngx.var/lsqlite3 is Lua/OpenResty;
 open Lwt/open Opium/let bindings/|> pipelines/>>= fun/App.post/App.get is OCaml/Opium;
+import groovy.*/groovy.sql.Sql/def variables/GString ${...}/command.execute()/GroovyShell is Groovy;
 use strict/use warnings/my $var/sub name/Mojolicious::Lite/app->start is Perl;
 pragma solidity/contract/mapping/msg.sender is Solidity; resource/provider/variable blocks are Terraform/HCL;
 package:flutter/runApp/Widget build is Dart/Flutter; -module/-export/function -> clauses are Erlang;
@@ -2166,6 +2209,7 @@ Perl/Mojolicious syntax includes use strict, use warnings, my $variable, sub nam
 Clojure/Ring/Compojure syntax includes (ns ...), (defn ...), (defroutes ...), :require vectors, clojure.java.jdbc, jdbc/query, and run-jetty.
 Lua/OpenResty syntax includes local function, local variables, require "cjson", require "lsqlite3", require "resty.http", ngx.req, ngx.var, ngx.say, cjson.decode, and cjson.encode.
 OCaml/Opium syntax includes open Lwt, open Opium, let bindings, |> pipelines, >>= fun binds, `Assoc variants, and App.post/App.get routes.
+Groovy syntax includes import groovy.*, groovy.sql.Sql, def variables, static methods, GString ${...}, command.execute(), and GroovyShell.
 Solidity syntax includes pragma solidity, contract, mapping, address, msg.sender, and public/external functions.
 Terraform/HCL syntax includes resource/provider/variable blocks, terraform blocks, and var.* references.
 Dart/Flutter syntax includes package:flutter imports, runApp, Widget build, StatelessWidget, and StatefulWidget.
@@ -2244,32 +2288,41 @@ Your JSON must match this structure:
 
     try:
         syntax_detected_language, syntax_detected_confidence, syntax_detected_evidence = _syntax_language_detection(payload.code)
-        try:
-            ai_detected_language = await run_ai_language_detection()
-            logger.info("AI language detection completed. detected_language=%s", ai_detected_language)
-        except Exception as detection_exc:
-            ai_detected_language = _detected_review_language(payload.language, payload.code)
-            logger.warning(
-                "AI language detection failed; using fallback language detection. error_type=%s error=%s fallback_language=%s",
-                detection_exc.__class__.__name__,
-                _safe_exception_summary(detection_exc),
-                ai_detected_language,
-            )
-
-        canonical_ai_detected = _canonical_language_name(ai_detected_language) or ai_detected_language
-        if (
-            syntax_detected_language
-            and (syntax_detected_confidence or 0) >= 95
-            and canonical_ai_detected != syntax_detected_language
-        ):
+        if syntax_detected_language and (syntax_detected_confidence or 0) >= 95:
+            ai_detected_language = syntax_detected_language
             logger.info(
-                "Strong syntax detection corrected AI language. ai_language=%s syntax_language=%s confidence=%s evidence=%s",
-                ai_detected_language,
+                "Skipping separate AI language detection because local syntax detection is strong. language=%s confidence=%s evidence=%s",
                 syntax_detected_language,
                 syntax_detected_confidence,
                 syntax_detected_evidence,
             )
-            ai_detected_language = syntax_detected_language
+        else:
+            try:
+                ai_detected_language = await run_ai_language_detection()
+                logger.info("AI language detection completed. detected_language=%s", ai_detected_language)
+            except Exception as detection_exc:
+                ai_detected_language = _detected_review_language(payload.language, payload.code)
+                logger.warning(
+                    "AI language detection failed; using fallback language detection. error_type=%s error=%s fallback_language=%s",
+                    detection_exc.__class__.__name__,
+                    _safe_exception_summary(detection_exc),
+                    ai_detected_language,
+                )
+
+            canonical_ai_detected = _canonical_language_name(ai_detected_language) or ai_detected_language
+            if (
+                syntax_detected_language
+                and (syntax_detected_confidence or 0) >= 95
+                and canonical_ai_detected != syntax_detected_language
+            ):
+                logger.info(
+                    "Strong syntax detection corrected AI language. ai_language=%s syntax_language=%s confidence=%s evidence=%s",
+                    ai_detected_language,
+                    syntax_detected_language,
+                    syntax_detected_confidence,
+                    syntax_detected_evidence,
+                )
+                ai_detected_language = syntax_detected_language
 
         review_prompt = _ai_review_prompt(
             payload,

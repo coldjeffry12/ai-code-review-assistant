@@ -632,6 +632,51 @@ let upload req =
     assert review.risk_score == 100
 
 
+def test_groovy_code_auto_detects_groovy_not_python():
+    code = """import groovy.json.JsonOutput
+import groovy.sql.Sql
+
+class HospitalInventoryService {
+    static final String ADMIN_TOKEN = "demo-admin-token"
+
+    static Map login(String username, String password) {
+        def sql = Sql.newInstance("jdbc:sqlite:hospital_inventory.db", "", "", "org.sqlite.JDBC")
+        def query = "SELECT id FROM users WHERE username = '${username}' AND password = '${password}'"
+        def user = sql.firstRow(query)
+        return [user_id: user.id]
+    }
+}"""
+
+    assert _detected_review_language("Auto", code) == "Groovy"
+
+
+def test_groovy_fallback_detects_sql_command_path_and_dynamic_execution():
+    review = _fallback_review(
+        ReviewRequest(
+            code="""import groovy.sql.Sql
+
+class Demo {
+  static Map run(String username, String backupName, String filename, String configPath) {
+    def query = "SELECT id FROM users WHERE username = '${username}'"
+    def command = "sqlite3 app.db .dump > backups/${backupName}"
+    command.execute()
+    def filePath = "uploads/${filename}"
+    new File(filePath).text = "demo"
+    def shell = new GroovyShell()
+    shell.evaluate(new File(configPath).text)
+    return [ok: true]
+  }
+}""",
+            focus="security",
+        )
+    )
+
+    categories = {_bug_category(bug) for bug in review.bugs}
+    assert review.detected_language == "Groovy"
+    assert {"sql_injection", "command_injection", "path_traversal", "dynamic_execution"}.issubset(categories)
+    assert review.risk_score == 100
+
+
 def test_erlang_code_auto_detects_erlang_not_elixir():
     code = """-module(payment_worker).
 -export([start/0, charge/2]).
@@ -955,15 +1000,8 @@ def test_ai_language_detection_overrides_local_hint():
     assert review.reviewed_language == "JavaScript"
 
 
-def test_strong_syntax_detection_overrides_wrong_ai_language_before_review(monkeypatch):
+def test_strong_syntax_detection_skips_extra_ai_language_call(monkeypatch):
     calls = {"count": 0, "prompts": []}
-    language_content = json.dumps(
-        {
-            "detected_language": "JavaScript",
-            "confidence": 0.96,
-            "evidence": "Mistook App.post for Express.",
-        }
-    )
     review_content = json.dumps(
         {
             "summary": "The OCaml Opium application has unsafe SQL construction.",
@@ -1000,8 +1038,6 @@ def test_strong_syntax_detection_overrides_wrong_ai_language_before_review(monke
         def create(self, **kwargs):
             calls["count"] += 1
             calls["prompts"].append(kwargs["messages"][-1]["content"])
-            if calls["count"] == 1:
-                return FakeCompletion(language_content)
             return FakeCompletion(review_content)
 
     class FakeChat:
@@ -1031,8 +1067,9 @@ let app =
 
     review = asyncio.run(review_code(ReviewRequest(code=code, focus="security")))
 
-    assert calls["count"] >= 2
-    assert "AI language detection step result:\nOCaml" in calls["prompts"][1]
+    assert calls["count"] == 1
+    assert "Detect the main programming language" not in calls["prompts"][0]
+    assert "AI language detection step result:\nOCaml" in calls["prompts"][0]
     assert review.detected_language == "OCaml"
     assert review.reviewed_language == "OCaml"
 
