@@ -89,6 +89,7 @@ _LANGUAGE_ALIASES = {
     "ruby": "Ruby",
     "rust": "Rust",
     "scala": "Scala",
+    "smalltalk": "Smalltalk",
     "sql": "SQL",
     "solidity": "Solidity",
     "swift": "Swift",
@@ -277,6 +278,22 @@ _LANGUAGE_SIGNATURES: list[dict[str, Any]] = [
             (r"\blistenhttp\s*\(", 5),
             (r"\brunapplication\s*\(", 5),
             (r"~\s*\w+", 2),
+        ],
+    },
+    {
+        "language": "Smalltalk",
+        "confidence": 98,
+        "evidence": "Smalltalk syntax: Object subclass:, class >> methods, := assignment, ^ returns, | local variables |, Dictionary new cascades, or message keywords ending with colon.",
+        "threshold": 5,
+        "patterns": [
+            (r"\bobject\s+subclass:\s*#\w+", 6),
+            (r"\b\w+\s+class\s*>>\s*\w+", 6),
+            (r"^\s*\|\s*[\w\s]+\s*\|", 3),
+            (r":=\s*", 2),
+            (r"^\s*\^\s+", 2),
+            (r"\bdictionary\s+new\b", 3),
+            (r"\byourself\b", 2),
+            (r"\bfilestream\b|\bosprocess\s+command:|\bznclient\s+new\b", 4),
         ],
     },
     {
@@ -564,6 +581,21 @@ def _code_looks_like_d(code_lower: str) -> bool:
     )
 
 
+def _code_looks_like_smalltalk(code_lower: str) -> bool:
+    return bool(
+        re.search(r"\bobject\s+subclass:\s*#\w+", code_lower)
+        or re.search(r"\b\w+\s+class\s*>>\s*\w+", code_lower)
+        or (
+            ":=" in code_lower
+            and "^" in code_lower
+            and ("dictionary new" in code_lower or "yourself" in code_lower or "filestream" in code_lower)
+        )
+        or "osprocess command:" in code_lower
+        or "znclient new" in code_lower
+        or "compiler evaluate:" in code_lower
+    )
+
+
 def _signature_language_detection(code_lower: str) -> tuple[str | None, int | None, str | None]:
     best_language: str | None = None
     best_confidence: int | None = None
@@ -598,6 +630,7 @@ def _syntax_language_detection(code: str) -> tuple[str | None, int | None, str |
         ("OCaml", 98, "OCaml/Opium syntax: open Lwt/Opium, let bindings, |> pipelines, >>= Lwt binds, variant matches, or App.post/App.get routes.", _code_looks_like_ocaml(code_lower)),
         ("Groovy", 98, "Groovy syntax: groovy.json/groovy.sql imports, def variables, static methods, GString interpolation, map literals, or command.execute().", _code_looks_like_groovy(code_lower)),
         ("D", 98, "D/vibe.d syntax: import vibe.d/std.*, enum constants, HTTPServerRequest/HTTPServerResponse, URLRouter, listenHTTP, runApplication, or ~ string concatenation.", _code_looks_like_d(code_lower)),
+        ("Smalltalk", 98, "Smalltalk syntax: Object subclass:, class >> methods, := assignment, ^ returns, | local variables |, Dictionary new cascades, or message keywords ending with colon.", _code_looks_like_smalltalk(code_lower)),
         ("Ruby", 96, "Ruby/Sinatra syntax: require 'sinatra', route blocks with do/end, SQLite3::Database, or Net::HTTP.", _code_looks_like_ruby(code_lower)),
         ("JavaScript", 96, "JavaScript/Node.js syntax: require/import with Express, axios, fs, child_process, app.get/app.post, or module.exports.", _code_looks_like_node_js(code_lower)),
     ]
@@ -770,7 +803,7 @@ def _canonical_language_name(value: str | None) -> str | None:
 
 
 def _language_from_ai_summary(summary: str) -> str | None:
-    language_pattern = r"(crystal|clojure|compojure|elixir|groovy|dlang|d|python|ruby|lua|openresty|nginx lua|perl|mojolicious|ocaml|javascript|typescript|node\.js|java|c\+\+|c#|sql|go|rust|php|kotlin|swift|bash|nim|dart|flutter|scala|haskell|erlang|f#|fsharp|objective-c|objc|vb\.net|visual basic|r|julia|solidity|terraform|hcl|dockerfile|yaml|yml)"
+    language_pattern = r"(crystal|clojure|compojure|elixir|groovy|dlang|d|smalltalk|python|ruby|lua|openresty|nginx lua|perl|mojolicious|ocaml|javascript|typescript|node\.js|java|c\+\+|c#|sql|go|rust|php|kotlin|swift|bash|nim|dart|flutter|scala|haskell|erlang|f#|fsharp|objective-c|objc|vb\.net|visual basic|r|julia|solidity|terraform|hcl|dockerfile|yaml|yml)"
     summary_lower = summary.lower()
     patterns = [
         rf"\b(?:the|this|provided|pasted)\s+{language_pattern}\s+(?:code|application|app|service|script|program)\b",
@@ -1292,7 +1325,10 @@ def _contains_user_input(text: str, user_vars: set[str]) -> bool:
 
 def _has_hardcoded_secret(code_lower: str) -> bool:
     secret_name = r"(password|api[_-]?key|secret|token|jwt_secret|admin_key|adminkey|db_password|database_password|payment_secret|payment_token)"
-    return bool(re.search(rf"\b[\w]*{secret_name}[\w]*\s*=", code_lower))
+    return bool(
+        re.search(rf"\b[\w]*{secret_name}[\w]*\s*=", code_lower)
+        or re.search(rf"\b[\w]*{secret_name}[\w]*\s*\n\s*\^\s*['\"]", code_lower)
+    )
 
 
 def _has_unsafe_sql_construction(code_lower: str) -> bool:
@@ -1302,7 +1338,11 @@ def _has_unsafe_sql_construction(code_lower: str) -> bool:
         code_lower,
         re.DOTALL,
     )
-    return bool(has_sql and has_concat_or_format)
+    smalltalk_sql_concat = re.search(
+        r"(?:\w*sql\s*:=|execute:)\s*'[\s\S]{0,600}\b(select|insert|update|delete)\b[\s\S]{0,600},\s*\w+",
+        code_lower,
+    )
+    return bool(has_sql and has_concat_or_format or smalltalk_sql_concat)
 
 
 def _has_raw_card_handling(code_lower: str) -> bool:
@@ -1316,6 +1356,7 @@ def _has_unsafe_path_construction(code_lower: str) -> bool:
     has_file_write = has_file_write or "fs.writefile" in code_lower or "fs.promises.writefile" in code_lower
     has_file_write = has_file_write or re.search(r"\bnew\s+file\s*\(|\.text\s*=", code_lower)
     has_file_write = has_file_write or re.search(r"\b(write|readtext)\s*\(", code_lower)
+    has_file_write = has_file_write or "filestream" in code_lower
     has_user_filename = re.search(r"\b(filename|file_name|path|upload|user_input|email)\b", code_lower) or bool({"filename", "file_name", "path", "email", "upload"} & user_vars)
     has_path_join = "os.path.join" in code_lower or "pathlib.path" in code_lower or "path.join" in code_lower or "/" in code_lower
     return bool(has_file_write and has_user_filename and has_path_join)
@@ -1348,18 +1389,20 @@ def _has_shell_command_injection(code_lower: str) -> bool:
             r"(os\.execute|sys\.command|system\s*\(|execmd\s*\(|executeshell\s*\(|system\.cmd\s*\(|system\.cmd|system\.cmd\(|exec_cmd\s*\(|subprocess\.|:\s*os\.cmd|\.execute\s*\(\s*\)|\bsh\s+\"sh\"\s+\"-c\")",
             code_lower,
         )
+        or "osprocess command:" in code_lower
     )
     if not has_shell_exec:
         return False
 
     command_assignments = re.findall(
-        r"(?:local\s+|let\s+|my\s+|const\s+|var\s+|final\s+)?\w*command\w*\s*=\s*([^;\n]+)",
+        r"(?:local\s+|let\s+|my\s+|const\s+|var\s+|final\s+)?\w*command\w*\s*:?\s*=\s*([^;\n]+)",
         code_lower,
     )
     shell_calls = re.findall(r"(?:os\.execute|system|execmd|executeshell|exec_cmd|system\.cmd|\.execute)\s*\(([^)\n]+)", code_lower)
+    shell_calls.extend(re.findall(r"osprocess\s+command:\s*([^\n.]+)", code_lower))
     suspicious_parts = command_assignments + shell_calls
     return any(
-        any(marker in part for marker in ["..", "+", "~", "#{", "${", "sh -c"])
+        any(marker in part for marker in ["..", "+", "~", ",", "#{", "${", "sh -c"])
         or _contains_user_input(part, user_vars)
         for part in suspicious_parts
     )
@@ -1871,13 +1914,13 @@ def _fallback_review(payload: ReviewRequest, reason: str | None = None) -> Revie
         )
         risk_score += 35
 
-    if re.search(r"\bgroovyshell\s*\(|\.evaluate\s*\(", code_lower):
+    if re.search(r"\bgroovyshell\s*\(|\.evaluate\s*\(|\bcompiler\s+evaluate:", code_lower):
         bugs.append(
             BugFinding(
-                title="Unsafe dynamic Groovy execution",
+                title="Unsafe dynamic code execution",
                 severity="Critical",
                 explanation="The code evaluates file or request-controlled content dynamically, which can execute arbitrary code.",
-                suggested_fix="Do not evaluate untrusted Groovy scripts. Use a strict parser, schema validation, or a signed allow-list of configuration files.",
+                suggested_fix="Do not evaluate untrusted scripts or configuration files. Use a strict parser, schema validation, or a signed allow-list of configuration files.",
             )
         )
         risk_score += 40
@@ -2171,6 +2214,7 @@ local function/local variables/require "resty.http"/require "cjson"/ngx.req/ngx.
 open Lwt/open Opium/let bindings/|> pipelines/>>= fun/App.post/App.get is OCaml/Opium;
 import groovy.*/groovy.sql.Sql/def variables/GString ${...}/command.execute()/GroovyShell is Groovy;
 import vibe.d/import std.* with semicolons/HTTPServerRequest/HTTPServerResponse/URLRouter/listenHTTP/runApplication/~ string concatenation is D/vibe.d;
+Object subclass:/class >> method/:= assignment/^ return/Dictionary new cascades/FileStream/OSProcess command:/ZnClient new is Smalltalk.
 use strict/use warnings/my $var/sub name/Mojolicious::Lite/app->start is Perl;
 pragma solidity/contract/mapping/msg.sender is Solidity; resource/provider/variable blocks are Terraform/HCL;
 package:flutter/runApp/Widget build is Dart/Flutter; -module/-export/function -> clauses are Erlang;
@@ -2178,6 +2222,7 @@ require('express') or app.post(...) is JavaScript/Node.js.
 Do not classify D/vibe.d code as JavaScript just because it uses router.post/router.get.
 Do not classify Perl or Mojolicious code as C++ just because it uses -> method syntax.
 SQL keywords inside strings are a SQL injection risk, but they do not make the whole pasted code SQL.
+Do not classify Smalltalk code as SQL just because it builds SQL strings.
 Do not classify Lua/OpenResty code as SQL just because it builds SQL strings.
 This is defensive code review for a portfolio app. The user is asking to find and fix vulnerabilities,
 not to exploit them. Do not provide executable attack steps.
@@ -2247,12 +2292,14 @@ Lua/OpenResty syntax includes local function, local variables, require "cjson", 
 OCaml/Opium syntax includes open Lwt, open Opium, let bindings, |> pipelines, >>= fun binds, `Assoc variants, and App.post/App.get routes.
 Groovy syntax includes import groovy.*, groovy.sql.Sql, def variables, static methods, GString ${...}, command.execute(), and GroovyShell.
 D/vibe.d syntax includes import vibe.d;, import std.*;, HTTPServerRequest/HTTPServerResponse, URLRouter, listenHTTP, runApplication, enum constants, and ~ string concatenation.
+Smalltalk syntax includes Object subclass:, class >> method definitions, := assignment, ^ returns, | local variables |, Dictionary new cascades with semicolons, FileStream, OSProcess command:, ZnClient new, and message keywords ending with colon.
 Solidity syntax includes pragma solidity, contract, mapping, address, msg.sender, and public/external functions.
 Terraform/HCL syntax includes resource/provider/variable blocks, terraform blocks, and var.* references.
 Dart/Flutter syntax includes package:flutter imports, runApp, Widget build, StatelessWidget, and StatefulWidget.
 Erlang syntax includes -module(...), -export([...]), function clauses with ->, receive, and spawn.
 Do not return JavaScript for D/vibe.d code just because it uses router.post/router.get.
 Do not return C++ for Perl code just because Perl uses -> method calls.
+Do not return SQL for Smalltalk code just because it builds SQL strings.
 Do not return SQL for Lua/OpenResty code just because it builds SQL strings.
 Return SQL only for standalone SQL scripts or mostly raw SQL.
 Your JSON must match this structure:

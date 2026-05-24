@@ -356,6 +356,33 @@ void main() {
     assert _detected_review_language("Auto", code) == "D"
 
 
+def test_smalltalk_code_auto_detects_smalltalk_not_sql():
+    code = """Object subclass: #ClinicInsuranceService
+    instanceVariableNames: ''
+    classVariableNames: ''
+    package: 'ClinicInsuranceRiskDemo'.
+
+ClinicInsuranceService class >> loginEmail: email password: password
+    | db sql rows user token |
+    db := self openDatabase.
+
+    sql := 'SELECT id, email, role FROM users WHERE email = '''
+        , email
+        , ''' AND password = '''
+        , password
+        , ''''.
+
+    rows := db execute: sql.
+    user := rows first.
+    token := self createTokenFor: (user at: 'id') role: (user at: 'role').
+
+    ^ Dictionary new
+        at: 'token' put: token;
+        yourself."""
+
+    assert _detected_review_language("Auto", code) == "Smalltalk"
+
+
 def test_elixir_code_auto_detects_elixir_not_python():
     code = """defmodule HospitalBillingService do
   @jwt_secret "demo-jwt-secret"
@@ -735,6 +762,46 @@ void login(HTTPServerRequest req, HTTPServerResponse res) {
     categories = {_bug_category(bug) for bug in review.bugs}
     assert review.detected_language == "D"
     assert {"sql_injection", "command_injection", "path_traversal"}.issubset(categories)
+    assert review.risk_score == 100
+
+
+def test_smalltalk_fallback_detects_sql_command_path_and_dynamic_execution():
+    review = _fallback_review(
+        ReviewRequest(
+            code="""Object subclass: #ClinicInsuranceService
+    instanceVariableNames: ''
+    classVariableNames: ''
+    package: 'ClinicInsuranceRiskDemo'.
+
+ClinicInsuranceService class >> adminToken
+    ^ 'demo-admin-token'.
+
+ClinicInsuranceService class >> loginEmail: email password: password
+    | sql |
+    sql := 'SELECT id FROM users WHERE email = ''' , email , ''' AND password = ''' , password , ''''.
+
+ClinicInsuranceService class >> uploadMedicalDocumentForPatient: patientId filename: filename content: content
+    | folder filePath |
+    folder := self uploadDir , '/' , patientId.
+    filePath := folder , '/' , filename.
+    FileStream forceNewFileNamed: filePath do: [ :file | file nextPutAll: content ].
+
+ClinicInsuranceService class >> backupDatabase: backupName
+    | command |
+    command := 'sqlite3 app.db .dump > backups/' , backupName.
+    OSProcess command: command.
+
+ClinicInsuranceService class >> importConfig: configPath
+    | content config |
+    content := FileStream readOnlyFileNamed: configPath do: [ :file | file contentsOfEntireFile ].
+    config := Compiler evaluate: content.""",
+            focus="security",
+        )
+    )
+
+    categories = {_bug_category(bug) for bug in review.bugs}
+    assert review.detected_language == "Smalltalk"
+    assert {"sql_injection", "hardcoded_secret", "command_injection", "path_traversal", "dynamic_execution"}.issubset(categories)
     assert review.risk_score == 100
 
 
