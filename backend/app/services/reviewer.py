@@ -988,7 +988,11 @@ def _has_hardcoded_secret(code_lower: str) -> bool:
 
 def _has_unsafe_sql_construction(code_lower: str) -> bool:
     has_sql = re.search(r"\b(select|insert|update|delete)\b", code_lower)
-    has_concat_or_format = re.search(r"(\+\s*\w+|f[\"']|`[^`]*\$\{|#\{|\.format\s*\(|%\s*\(|req\.(?:body|query|params)|params\s*\[)", code_lower, re.DOTALL)
+    has_concat_or_format = re.search(
+        r"(\+\s*\w+|\.\.\s*[\w.]+|f[\"']|`[^`]*\$\{|#\{|\.format\s*\(|%\s*\(|req\.(?:body|query|params)|params\s*\[)",
+        code_lower,
+        re.DOTALL,
+    )
     return bool(has_sql and has_concat_or_format)
 
 
@@ -1015,6 +1019,38 @@ def _has_js_command_injection(code_lower: str) -> bool:
     exec_calls = re.findall(r"(?:exec|execsync|system)\s*\(([^)\n]+)", code_lower)
     suspicious_parts = command_assignments + exec_calls
     return any("${" in part or "+" in part or _contains_user_input(part, user_vars) for part in suspicious_parts) or _contains_user_input(code_lower, user_vars)
+
+
+def _has_shell_command_injection(code_lower: str) -> bool:
+    user_vars = _user_input_variables(code_lower) | {
+        "backup_name",
+        "backupname",
+        "filename",
+        "file_name",
+        "path",
+        "config_path",
+        "command",
+    }
+    has_shell_exec = bool(
+        re.search(
+            r"(os\.execute|system\s*\(|execmd\s*\(|system\.cmd\s*\(|system\.cmd|system\.cmd\(|exec_cmd\s*\(|subprocess\.|:\s*os\.cmd|\bsh\s+\"sh\"\s+\"-c\")",
+            code_lower,
+        )
+    )
+    if not has_shell_exec:
+        return False
+
+    command_assignments = re.findall(
+        r"(?:local\s+|let\s+|my\s+|const\s+|var\s+|final\s+)?\w*command\w*\s*=\s*([^;\n]+)",
+        code_lower,
+    )
+    shell_calls = re.findall(r"(?:os\.execute|system|execmd|exec_cmd|system\.cmd)\s*\(([^)\n]+)", code_lower)
+    suspicious_parts = command_assignments + shell_calls
+    return any(
+        any(marker in part for marker in ["..", "+", "#{", "${", "sh -c"])
+        or _contains_user_input(part, user_vars)
+        for part in suspicious_parts
+    )
 
 
 def _has_axios_post(code_lower: str) -> bool:
@@ -1222,12 +1258,22 @@ def _fallback_review(payload: ReviewRequest, reason: str | None = None) -> Revie
         )
         risk_score += 40
 
-    if is_javascript_review and _has_js_command_injection(code_lower):
+    has_command_injection = (
+        _has_js_command_injection(code_lower)
+        if is_javascript_review
+        else _has_shell_command_injection(code_lower)
+    )
+    if has_command_injection:
+        command_title = (
+            "Command injection from child_process.exec"
+            if is_javascript_review
+            else "Command injection from shell command construction"
+        )
         bugs.append(
             BugFinding(
-                title="Command injection from child_process.exec",
+                title=command_title,
                 severity="Critical",
-                explanation="The code builds a shell command from user-controlled data before passing it to child_process.exec or a similar shell execution API.",
+                explanation="The code builds a shell command from user-controlled data before passing it to a shell execution API.",
                 suggested_fix="Avoid shell execution for user input. Use safe library calls or spawn/execFile with a fixed command and validated arguments.",
             )
         )
@@ -1600,7 +1646,9 @@ def _fallback_review(payload: ReviewRequest, reason: str | None = None) -> Revie
     if _has_unsafe_path_construction(code_lower):
         test_cases.append("Test filenames containing ../ path traversal and verify writes stay inside the allowed upload directory.")
 
-    if is_javascript_review and _has_js_command_injection(code_lower):
+    if (is_javascript_review and _has_js_command_injection(code_lower)) or (
+        not is_javascript_review and _has_shell_command_injection(code_lower)
+    ):
         test_cases.append("Test shell command inputs containing separators such as ; and && and verify they are rejected.")
 
     if is_javascript_review and _has_js_ssrf(code_lower):

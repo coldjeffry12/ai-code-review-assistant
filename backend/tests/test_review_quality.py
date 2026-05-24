@@ -473,6 +473,49 @@ end"""
     assert _detected_review_language("Auto", code) == "Lua"
 
 
+def test_lua_sql_string_concatenation_is_detected_as_sql_injection():
+    review = _fallback_review(
+        ReviewRequest(
+            code="""local cjson = require "cjson"
+local sqlite3 = require "lsqlite3"
+
+local function login()
+    local body = cjson.decode(ngx.req.get_body_data())
+    local sql = "SELECT id FROM users WHERE email = '" .. body.email .. "'"
+    local conn = sqlite3.open("app.db")
+    for row in conn:nrows(sql) do
+        ngx.say(cjson.encode(row))
+    end
+end""",
+            focus="security",
+        )
+    )
+
+    assert review.detected_language == "Lua"
+    assert any(_bug_category(bug) == "sql_injection" and bug.severity == "Critical" for bug in review.bugs)
+    assert review.risk_score >= 80
+
+
+def test_lua_os_execute_command_construction_is_detected_as_command_injection():
+    review = _fallback_review(
+        ReviewRequest(
+            code="""local cjson = require "cjson"
+
+local function backup_database()
+    local body = cjson.decode(ngx.req.get_body_data())
+    local backup_name = body.backup_name
+    local command = "sqlite3 app.db .dump > backups/" .. backup_name
+    os.execute(command)
+end""",
+            focus="security",
+        )
+    )
+
+    assert review.detected_language == "Lua"
+    assert any(_bug_category(bug) == "command_injection" and bug.severity == "Critical" for bug in review.bugs)
+    assert review.risk_score >= 80
+
+
 def test_language_detection_prompt_uses_short_sample_for_large_code():
     code = "\n".join([f"line_{index}" for index in range(400)])
     prompt = _ai_language_detection_prompt(code)
