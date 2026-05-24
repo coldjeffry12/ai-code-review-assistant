@@ -14,6 +14,7 @@ from app.services.reviewer import (
     _merge_safety_checks,
     _normalize_review_response,
     _review_from_ai_json,
+    _review_from_ai_text,
     review_code,
 )
 
@@ -382,6 +383,32 @@ Kemal.run"""
     assert _detected_review_language("Auto", code) == "Crystal"
 
 
+def test_perl_mojolicious_code_auto_detects_perl_not_cpp_or_sql():
+    code = """use strict;
+use warnings;
+use Mojolicious::Lite;
+use DBI;
+
+my $ADMIN_TOKEN = "demo-admin-token";
+
+sub db_connect {
+    return DBI->connect("dbi:SQLite:dbname=property.db", "", "");
+}
+
+post "/login" => sub {
+    my $c = shift;
+    my $email = $c->req->json->{email};
+    my $dbh = db_connect();
+    my $sql = "SELECT id FROM users WHERE email = '$email'";
+    my $row = $dbh->selectrow_hashref($sql);
+    return $c->render(json => { id => $row->{id} });
+};
+
+app->start;"""
+
+    assert _detected_review_language("Auto", code) == "Perl"
+
+
 def test_language_detection_prompt_uses_short_sample_for_large_code():
     code = "\n".join([f"line_{index}" for index in range(400)])
     prompt = _ai_language_detection_prompt(code)
@@ -471,6 +498,52 @@ def test_ai_summary_language_corrects_conflicting_detected_metadata():
 
     assert review.detected_language == "Elixir"
     assert review.reviewed_language == "Elixir"
+
+
+def test_ai_summary_language_corrects_conflicting_perl_metadata():
+    review = _review_from_ai_json(
+        {
+            "summary": "The Perl application has SQL injection and command injection risks.",
+            "detected_language": "C++",
+            "reviewed_language": "C++",
+            "risk_score": 100,
+            "bugs": [
+                {
+                    "title": "SQL injection",
+                    "severity": "Critical",
+                    "explanation": "The SQL query interpolates user input.",
+                    "suggested_fix": "Use DBI placeholders.",
+                }
+            ],
+            "improvements": ["Use prepared statements."],
+            "test_cases": ["Test SQL injection payloads are rejected."],
+            "fixed_code": None,
+        },
+        ReviewRequest(
+            code='use strict;\nuse Mojolicious::Lite;\nmy $sql = "SELECT id FROM users WHERE email = $email";\napp->start;',
+            focus="security",
+        ),
+    )
+
+    assert review.detected_language == "Perl"
+    assert review.reviewed_language == "Perl"
+
+
+def test_malformed_ai_json_summary_is_extracted_without_raw_json_improvement():
+    content = '{"summary":"The Perl application has critical SQL injection risks.","detected_language":"C++","bugs":['
+    review = _review_from_ai_text(
+        content,
+        ReviewRequest(
+            code='use strict;\nuse Mojolicious::Lite;\nmy $sql = "SELECT id FROM users WHERE email = $email";\napp->start;',
+            focus="security",
+        ),
+        "C++",
+    )
+
+    assert review.detected_language == "Perl"
+    assert review.reviewed_language == "Perl"
+    assert "perl application" in review.summary.lower()
+    assert all('"summary"' not in improvement for improvement in review.improvements)
 
 
 def test_ai_sql_language_metadata_is_corrected_for_nim_application_code():

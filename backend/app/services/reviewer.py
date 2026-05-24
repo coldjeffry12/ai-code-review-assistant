@@ -57,9 +57,11 @@ _LANGUAGE_ALIASES = {
     "javascript": "JavaScript",
     "js": "JavaScript",
     "kotlin": "Kotlin",
+    "mojolicious": "Perl",
     "node": "JavaScript",
     "node.js": "JavaScript",
     "nim": "Nim",
+    "perl": "Perl",
     "php": "PHP",
     "python": "Python",
     "py": "Python",
@@ -212,6 +214,23 @@ def _code_looks_like_nim(code_lower: str) -> bool:
     )
 
 
+def _code_looks_like_perl(code_lower: str) -> bool:
+    return bool(
+        re.search(
+            r"^\s*use\s+(?:strict|warnings|mojolicious::lite|dbi|json|yaml::xs|lwp::useragent|file::path|file::spec|posix)\b",
+            code_lower,
+            re.MULTILINE,
+        )
+        or re.search(r"^\s*my\s+\$\w+\s*=", code_lower, re.MULTILINE)
+        or re.search(r"^\s*sub\s+\w+\s*\{", code_lower, re.MULTILINE)
+        or re.search(r"^\s*(get|post|put|patch|delete)\s+['\"][^'\"]+['\"]\s*=>\s*sub\b", code_lower, re.MULTILINE)
+        or "dbi->connect" in code_lower
+        or "$c->render" in code_lower
+        or "app->start" in code_lower
+        or "lwp::useragent" in code_lower
+    )
+
+
 def _code_looks_like_node_js(code_lower: str) -> bool:
     if _code_looks_like_ruby(code_lower):
         return False
@@ -239,6 +258,8 @@ def _detected_review_language(selected_language: str, code: str) -> str:
         return "Elixir"
     if _code_looks_like_nim(code_lower):
         return "Nim"
+    if _code_looks_like_perl(code_lower):
+        return "Perl"
     if _code_looks_like_node_js(code_lower):
         return "JavaScript"
     if re.search(r"\b(public|private|protected)\s+class\b|\bsystem\.out\.println\b|\bstring\[\]\s+args\b|\.getbytes\s*\(", code_lower):
@@ -339,10 +360,10 @@ def _canonical_language_name(value: str | None) -> str | None:
 
 
 def _language_from_ai_summary(summary: str) -> str | None:
-    language_pattern = r"(crystal|elixir|python|ruby|javascript|typescript|node\.js|java|c\+\+|c#|sql|go|rust|php|kotlin|swift|bash|nim)"
+    language_pattern = r"(crystal|elixir|python|ruby|perl|mojolicious|javascript|typescript|node\.js|java|c\+\+|c#|sql|go|rust|php|kotlin|swift|bash|nim)"
     summary_lower = summary.lower()
     patterns = [
-        rf"\b(?:the|this|provided|pasted)\s+{language_pattern}\s+code\b",
+        rf"\b(?:the|this|provided|pasted)\s+{language_pattern}\s+(?:code|application|app|service|script|program)\b",
         rf"\bcode\s+(?:is|appears\s+to\s+be)\s+(?:written\s+in\s+)?{language_pattern}\b",
     ]
 
@@ -1550,16 +1571,41 @@ def _review_from_ai_json(
     ), payload.language if payload else None, payload.code if payload else None)
 
 
+def _extract_summary_from_ai_text(content: str) -> str | None:
+    match = re.search(r'"summary"\s*:\s*"((?:\\.|[^"\\])*)"', content, re.IGNORECASE | re.DOTALL)
+    if not match:
+        return None
+
+    try:
+        summary = json.loads(f'"{match.group(1)}"')
+    except json.JSONDecodeError:
+        summary = match.group(1)
+
+    summary = re.sub(r"\s+", " ", str(summary)).strip()
+    return summary or None
+
+
+def _looks_like_json_fragment(content: str) -> bool:
+    stripped = content.strip()
+    return stripped.startswith("{") or any(field in stripped for field in ['"summary"', '"bugs"', '"risk_score"', '"detected_language"'])
+
+
 def _review_from_ai_text(content: str, payload: ReviewRequest, detected_language_override: str | None = None) -> ReviewResponse:
     cleaned = re.sub(r"\s+", " ", content.strip())
     if len(cleaned) > 500:
         cleaned = cleaned[:497].rstrip() + "..."
+    summary = _extract_summary_from_ai_text(content)
+    improvements = (
+        ["AI response was malformed, so structured local safety findings were used instead."]
+        if _looks_like_json_fragment(content)
+        else ([cleaned] if cleaned else ["Review the structured findings and test ideas."])
+    )
 
     return _normalize_review_response(ReviewResponse(
-        summary="AI review completed, but the model response was not valid JSON. Structured local findings were merged with the AI response.",
+        summary=summary or "AI review completed, but the model response was not valid JSON. Structured local findings were merged with the AI response.",
         risk_score=50,
         bugs=[],
-        improvements=[cleaned] if cleaned else ["Review the structured findings and test ideas."],
+        improvements=improvements,
         test_cases=["Retest the highlighted risky paths after applying fixes."],
         fixed_code=None,
         used_ai=True,
@@ -1614,7 +1660,9 @@ Do not copy any local/default language hint when manual language selection is no
 Use syntax evidence for language detection: defmodule/do/end/Postgrex/Jason is Elixir;
 require "sinatra" with do/end is Ruby; require "kemal"/do |env|/.as_s/Kemal.run is Crystal;
 import jester/proc/routes/when isMainModule is Nim;
+use strict/use warnings/my $var/sub name/Mojolicious::Lite/app->start is Perl;
 require('express') or app.post(...) is JavaScript/Node.js.
+Do not classify Perl or Mojolicious code as C++ just because it uses -> method syntax.
 SQL keywords inside strings are a SQL injection risk, but they do not make the whole pasted code SQL.
 This is defensive code review for a portfolio app. The user is asking to find and fix vulnerabilities,
 not to exploit them. Do not provide executable attack steps.
@@ -1676,6 +1724,8 @@ Return only valid JSON.
 Detect the main programming language of pasted code before any review happens.
 Use syntax evidence, not vulnerability type.
 SQL keywords embedded inside application strings are not enough to classify the whole code as SQL.
+Perl/Mojolicious syntax includes use strict, use warnings, my $variable, sub name, DBI->connect, $c->render, and app->start.
+Do not return C++ for Perl code just because Perl uses -> method calls.
 Return SQL only for standalone SQL scripts or mostly raw SQL.
 Your JSON must match this structure:
 {
