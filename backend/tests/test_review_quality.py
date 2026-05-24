@@ -579,6 +579,213 @@ function login($email) {
         assert _detected_review_language("Auto", code) == expected_language, expected_language
 
 
+def test_extra_language_fingerprints_detect_specialized_languages_and_formats():
+    cases = [
+        (
+            "Haxe",
+            """package;
+import haxe.Json;
+
+class Main {
+  static function main() {
+    trace(Json.stringify({ ok: true }));
+  }
+}""",
+        ),
+        (
+            "V",
+            """module main
+
+struct User {
+    name string
+}
+
+fn main() {
+    mut count := 1
+    println(count)
+}""",
+        ),
+        (
+            "Odin",
+            """package main
+
+import "core:fmt"
+
+main :: proc() {
+    defer fmt.println("done")
+}""",
+        ),
+        (
+            "Q#",
+            """namespace Demo {
+    open Microsoft.Quantum.Intrinsic;
+
+    operation Flip(q : Qubit) : Unit {
+        H(q);
+        X(q);
+    }
+}""",
+        ),
+        (
+            "Hack",
+            """<?hh
+namespace App;
+
+function greet(string $name): void {
+    echo $name;
+}
+""",
+        ),
+        (
+            "CoffeeScript",
+            """class User extends Model
+  constructor: (@name) ->
+    console.log @name
+
+module.exports = User""",
+        ),
+        (
+            "PureScript",
+            """module Main where
+
+import Effect
+import Effect.Console (log)
+
+main :: Effect Unit
+main = do
+  log "hello" """,
+        ),
+        (
+            "GLSL",
+            """#version 330 core
+layout(location = 0) in vec3 position;
+
+void main() {
+  gl_Position = vec4(position, 1.0);
+}""",
+        ),
+        (
+            "CUDA",
+            """#include <cuda_runtime.h>
+
+__global__ void add(int *out) {
+  int i = threadIdx.x + blockIdx.x * blockDim.x;
+  out[i] = i;
+}
+
+int main() {
+  cudaMalloc(0, 0);
+}""",
+        ),
+        (
+            "Mermaid",
+            """graph TD
+  A[Start] --> B{Check}
+  B -->|yes| C[Done]""",
+        ),
+        (
+            "PlantUML",
+            """@startuml
+actor User
+User -> API: Review code
+@enduml""",
+        ),
+        (
+            "LaTeX",
+            """\\documentclass{article}
+\\usepackage{amsmath}
+\\begin{document}
+\\section{Demo}
+Hello
+\\end{document}""",
+        ),
+        (
+            "Bicep",
+            """param location string = resourceGroup().location
+resource storage 'Microsoft.Storage/storageAccounts@2023-01-01' = {
+  name: 'demo'
+  location: location
+}""",
+        ),
+        (
+            "YARA",
+            """rule SuspiciousDemo {
+  strings:
+    $a = "demo"
+  condition:
+    $a
+}""",
+        ),
+        (
+            "SPARQL",
+            """PREFIX foaf: <http://xmlns.com/foaf/0.1/>
+SELECT ?name WHERE {
+  ?person foaf:name ?name .
+}""",
+        ),
+        (
+            "XQuery",
+            """xquery version "3.1";
+for $book in doc("books.xml")//book
+return $book/title""",
+        ),
+        (
+            "Starlark",
+            """load("@rules_python//python:defs.bzl", "py_library")
+
+def deps():
+    native.cc_binary(name = "demo")
+    return select({"//conditions:default": []})""",
+        ),
+        (
+            "CUE",
+            """package api
+
+#User: {
+  name: string
+  age: int | _
+}""",
+        ),
+        (
+            "Thrift",
+            """namespace py demo
+
+struct User {
+  1: required string name
+}
+
+service UserService {
+  User getUser(1: string id)
+}""",
+        ),
+        (
+            "Cap'n Proto",
+            """@0xbf5147cbbecf40c1;
+
+struct Person {
+  name @0 :Text;
+  age @1 :UInt32;
+}""",
+        ),
+        (
+            "Markdown",
+            """# Review Notes
+
+- [x] Detect language
+- [ ] Run tests
+
+```zig
+const std = @import("std");
+```
+
+[Repo](https://example.com)""",
+        ),
+    ]
+
+    for expected_language, code in cases:
+        assert _detected_review_language("Auto", code) == expected_language, expected_language
+
+
 def test_smalltalk_code_auto_detects_smalltalk_not_sql():
     code = """Object subclass: #ClinicInsuranceService
     instanceVariableNames: ''
