@@ -1603,8 +1603,15 @@ def test_ai_language_detection_overrides_local_hint():
     assert review.reviewed_language == "JavaScript"
 
 
-def test_strong_syntax_detection_skips_extra_ai_language_call(monkeypatch):
+def test_ai_language_detection_runs_before_review_even_with_strong_syntax(monkeypatch):
     calls = {"count": 0, "prompts": []}
+    language_content = json.dumps(
+        {
+            "detected_language": "OCaml",
+            "confidence": 98,
+            "evidence": "open Lwt, open Opium, let bindings, and App.post routes.",
+        }
+    )
     review_content = json.dumps(
         {
             "summary": "The OCaml Opium application has unsafe SQL construction.",
@@ -1641,6 +1648,8 @@ def test_strong_syntax_detection_skips_extra_ai_language_call(monkeypatch):
         def create(self, **kwargs):
             calls["count"] += 1
             calls["prompts"].append(kwargs["messages"][-1]["content"])
+            if calls["count"] == 1:
+                return FakeCompletion(language_content)
             return FakeCompletion(review_content)
 
     class FakeChat:
@@ -1670,9 +1679,10 @@ let app =
 
     review = asyncio.run(review_code(ReviewRequest(code=code, focus="security")))
 
-    assert calls["count"] == 1
-    assert "Detect the main programming language" not in calls["prompts"][0]
-    assert "AI language detection step result:\nOCaml" in calls["prompts"][0]
+    assert calls["count"] == 2
+    assert "Detect the main programming language" in calls["prompts"][0]
+    assert "Look for code-style fingerprints" in calls["prompts"][0]
+    assert "AI language detection step result:\nOCaml" in calls["prompts"][1]
     assert review.detected_language == "OCaml"
     assert review.reviewed_language == "OCaml"
 

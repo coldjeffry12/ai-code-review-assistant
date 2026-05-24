@@ -2437,6 +2437,11 @@ Return only JSON.
 Do not review vulnerabilities in this step.
 If application code contains SQL strings, return the application language, not SQL.
 Return SQL only if the pasted code is primarily standalone SQL.
+Use this exact reasoning process before answering:
+1. Read the pasted code.
+2. Look for code-style fingerprints, such as @import("std") for Zig, Object subclass: for Smalltalk, import vibe.d for D, open Lwt for OCaml, and (defn ...) for Clojure.
+3. Compare all syntax clues together instead of trusting one weak clue.
+4. Pick the strongest language match and explain the strongest evidence briefly.
 This is a short sample from the pasted code when the full input is large.
 
 Code:
@@ -3783,7 +3788,7 @@ Your JSON must match this structure:
             options["max_tokens"] = max_tokens
         return options
 
-    async def run_ai_language_detection() -> str:
+    async def run_ai_language_detection() -> tuple[str, int | None, str | None]:
         completion = await asyncio.to_thread(
             client.chat.completions.create,
             **completion_options_for(
@@ -3798,7 +3803,15 @@ Your JSON must match this structure:
         detected_language = _canonical_language_name(str(parsed.get("detected_language") or "")) or str(parsed.get("detected_language") or "").strip()
         if not detected_language:
             raise ValueError("AI language detection did not return detected_language.")
-        return detected_language
+        confidence = parsed.get("confidence")
+        try:
+            confidence = int(float(confidence)) if confidence is not None else None
+        except (TypeError, ValueError):
+            confidence = None
+        if confidence is not None:
+            confidence = max(0, min(confidence, 100))
+        evidence = str(parsed.get("evidence") or "").strip() or None
+        return detected_language, confidence, evidence
 
     async def run_ai_review(user_prompt: str, detected_language: str | None = None) -> ReviewResponse:
         completion = await asyncio.to_thread(
@@ -3820,41 +3833,43 @@ Your JSON must match this structure:
 
     try:
         syntax_detected_language, syntax_detected_confidence, syntax_detected_evidence = _syntax_language_detection(payload.code)
-        if syntax_detected_language and (syntax_detected_confidence or 0) >= 95:
-            ai_detected_language = syntax_detected_language
+        ai_language_confidence: int | None = None
+        ai_language_evidence: str | None = None
+        try:
+            ai_detected_language, ai_language_confidence, ai_language_evidence = await run_ai_language_detection()
             logger.info(
-                "Skipping separate AI language detection because local syntax detection is strong. language=%s confidence=%s evidence=%s",
+                "AI language detection completed. detected_language=%s confidence=%s evidence=%s",
+                ai_detected_language,
+                ai_language_confidence,
+                ai_language_evidence,
+            )
+        except Exception as detection_exc:
+            ai_detected_language = _detected_review_language(payload.language, payload.code)
+            ai_language_confidence = syntax_detected_confidence
+            ai_language_evidence = syntax_detected_evidence
+            logger.warning(
+                "AI language detection failed; using fallback language detection. error_type=%s error=%s fallback_language=%s",
+                detection_exc.__class__.__name__,
+                _safe_exception_summary(detection_exc),
+                ai_detected_language,
+            )
+
+        canonical_ai_detected = _canonical_language_name(ai_detected_language) or ai_detected_language
+        if (
+            syntax_detected_language
+            and (syntax_detected_confidence or 0) >= 95
+            and canonical_ai_detected != syntax_detected_language
+        ):
+            logger.info(
+                "Strong syntax detection corrected AI language after AI detection ran. ai_language=%s syntax_language=%s confidence=%s evidence=%s",
+                ai_detected_language,
                 syntax_detected_language,
                 syntax_detected_confidence,
                 syntax_detected_evidence,
             )
-        else:
-            try:
-                ai_detected_language = await run_ai_language_detection()
-                logger.info("AI language detection completed. detected_language=%s", ai_detected_language)
-            except Exception as detection_exc:
-                ai_detected_language = _detected_review_language(payload.language, payload.code)
-                logger.warning(
-                    "AI language detection failed; using fallback language detection. error_type=%s error=%s fallback_language=%s",
-                    detection_exc.__class__.__name__,
-                    _safe_exception_summary(detection_exc),
-                    ai_detected_language,
-                )
-
-            canonical_ai_detected = _canonical_language_name(ai_detected_language) or ai_detected_language
-            if (
-                syntax_detected_language
-                and (syntax_detected_confidence or 0) >= 95
-                and canonical_ai_detected != syntax_detected_language
-            ):
-                logger.info(
-                    "Strong syntax detection corrected AI language. ai_language=%s syntax_language=%s confidence=%s evidence=%s",
-                    ai_detected_language,
-                    syntax_detected_language,
-                    syntax_detected_confidence,
-                    syntax_detected_evidence,
-                )
-                ai_detected_language = syntax_detected_language
+            ai_detected_language = syntax_detected_language
+            ai_language_confidence = syntax_detected_confidence
+            ai_language_evidence = syntax_detected_evidence
 
         review_prompt = _ai_review_prompt(
             payload,
@@ -3891,6 +3906,11 @@ Your JSON must match this structure:
                     raise
                 ai_review = await run_ai_review(_ai_local_findings_prompt(payload, safety_review), ai_detected_language)
                 ai_review.review_source = "ai_from_local_findings"
+        ai_review.detected_language = ai_detected_language
+        ai_review.reviewed_language = ai_detected_language
+        ai_review.language_detection_source = "ai"
+        ai_review.language_detection_confidence = ai_language_confidence or ai_review.language_detection_confidence
+        ai_review.language_detection_evidence = ai_language_evidence or ai_review.language_detection_evidence
         review = _merge_safety_checks(ai_review, safety_review, payload.language, payload.code)
         if ai_review.review_source in {"ai_from_local_findings", "ai_text_repair"}:
             review.review_source = "ai_from_local_findings"
