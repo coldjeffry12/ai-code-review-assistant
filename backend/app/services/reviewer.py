@@ -55,9 +55,17 @@ _LANGUAGE_ALIASES = {
     "elixir": "Elixir",
     "go": "Go",
     "golang": "Go",
+    "dart": "Dart",
+    "dockerfile": "Dockerfile",
+    "erlang": "Erlang",
+    "f#": "F#",
+    "fsharp": "F#",
+    "flutter": "Dart",
     "html": "HTML",
+    "hcl": "Terraform",
     "java": "Java",
     "javascript": "JavaScript",
+    "julia": "Julia",
     "js": "JavaScript",
     "kotlin": "Kotlin",
     "lua": "Lua",
@@ -66,18 +74,201 @@ _LANGUAGE_ALIASES = {
     "node.js": "JavaScript",
     "nginx lua": "Lua",
     "nim": "Nim",
+    "objc": "Objective-C",
+    "objective-c": "Objective-C",
     "openresty": "Lua",
     "perl": "Perl",
     "php": "PHP",
     "python": "Python",
     "py": "Python",
+    "r": "R",
     "ruby": "Ruby",
     "rust": "Rust",
+    "scala": "Scala",
     "sql": "SQL",
+    "solidity": "Solidity",
     "swift": "Swift",
+    "terraform": "Terraform",
     "typescript": "TypeScript",
     "ts": "TypeScript",
+    "vb.net": "VB.NET",
+    "visual basic": "VB.NET",
+    "yaml": "YAML",
+    "yml": "YAML",
 }
+
+_LANGUAGE_SIGNATURES: list[dict[str, Any]] = [
+    {
+        "language": "Dart",
+        "confidence": 95,
+        "evidence": "Dart/Flutter syntax: package:flutter imports, runApp, Widget build, StatelessWidget/StatefulWidget, or Future<void> main.",
+        "threshold": 5,
+        "patterns": [
+            (r"import\s+['\"]package:flutter/", 5),
+            (r"\brunapp\s*\(", 4),
+            (r"\b(statelesswidget|statefulwidget|widget\s+build)\b", 4),
+            (r"\bfuture\s*<\s*void\s*>\s+main\s*\(", 3),
+            (r"\bvoid\s+main\s*\(\s*\)\s*(?:async\s*)?\{", 2),
+        ],
+    },
+    {
+        "language": "Scala",
+        "confidence": 94,
+        "evidence": "Scala syntax: object extends App, case class, val/var, def, or scala imports.",
+        "threshold": 5,
+        "patterns": [
+            (r"\bobject\s+\w+\s+extends\s+app\b", 5),
+            (r"\bcase\s+class\s+\w+", 4),
+            (r"\bimport\s+scala\.", 4),
+            (r"\bdef\s+\w+\s*\([^)]*\)\s*[:=]", 3),
+            (r"\bval\s+\w+\s*=", 2),
+        ],
+    },
+    {
+        "language": "Haskell",
+        "confidence": 94,
+        "evidence": "Haskell syntax: module ... where, type signatures with ::, main :: IO, do blocks, or <- binding.",
+        "threshold": 5,
+        "patterns": [
+            (r"^\s*module\s+[\w.]+\s+where\b", 5),
+            (r"^\s*main\s*::\s*io\s*\(\s*\)", 5),
+            (r"^\s*\w+\s*::\s*[^=\n]+", 3),
+            (r"\bimport\s+data\.", 3),
+            (r"<-\s*\w+", 2),
+        ],
+    },
+    {
+        "language": "Erlang",
+        "confidence": 95,
+        "evidence": "Erlang syntax: -module(...), -export([...]), function clauses with ->, and atoms ending clauses with periods.",
+        "threshold": 5,
+        "patterns": [
+            (r"^\s*-module\s*\([^)]+\)\s*\.", 5),
+            (r"^\s*-export\s*\(\s*\[", 5),
+            (r"\w+\s*\([^)]*\)\s*->", 3),
+            (r"\breceive\b|\bspawn\s*\(", 3),
+            (r"\.\s*$", 1),
+        ],
+    },
+    {
+        "language": "F#",
+        "confidence": 92,
+        "evidence": "F# syntax: open System, [<EntryPoint>], let bindings, printfn, or module declarations.",
+        "threshold": 5,
+        "patterns": [
+            (r"^\s*open\s+system\b", 4),
+            (r"\[<entrypoint>\]", 5),
+            (r"^\s*module\s+[\w.]+", 3),
+            (r"^\s*let\s+\w+\s+[^=]*=", 3),
+            (r"\bprintfn\s+\"", 3),
+        ],
+    },
+    {
+        "language": "Objective-C",
+        "confidence": 95,
+        "evidence": "Objective-C syntax: #import Foundation/UIKit, @interface, @implementation, NSLog, or NSString.",
+        "threshold": 5,
+        "patterns": [
+            (r"#import\s+<(?:foundation|uikit)/", 5),
+            (r"@interface\s+\w+", 5),
+            (r"@implementation\s+\w+", 5),
+            (r"\bnslog\s*\(", 3),
+            (r"\bnsstring\s*\*", 3),
+        ],
+    },
+    {
+        "language": "VB.NET",
+        "confidence": 94,
+        "evidence": "VB.NET syntax: Imports System, Module/Class, Sub Main, Dim, and End Sub/End Module.",
+        "threshold": 5,
+        "patterns": [
+            (r"^\s*imports\s+system\b", 4),
+            (r"^\s*(module|class)\s+\w+", 3),
+            (r"^\s*sub\s+main\s*\(", 4),
+            (r"^\s*dim\s+\w+\s+as\s+\w+", 3),
+            (r"^\s*end\s+(sub|module|class)\b", 3),
+        ],
+    },
+    {
+        "language": "R",
+        "confidence": 90,
+        "evidence": "R syntax: library(...), <- assignments, function definitions, data.frame/tibble/dplyr usage.",
+        "threshold": 5,
+        "patterns": [
+            (r"^\s*library\s*\(", 4),
+            (r"<-\s*function\s*\(", 4),
+            (r"\bdata\.frame\s*\(", 3),
+            (r"\btibble\s*\(|\bdplyr::|\bggplot\s*\(", 3),
+            (r"^\s*\w+\s*<-\s*", 2),
+        ],
+    },
+    {
+        "language": "Julia",
+        "confidence": 92,
+        "evidence": "Julia syntax: using/import packages, function ... end, println, DataFrame, or module ... end.",
+        "threshold": 5,
+        "patterns": [
+            (r"^\s*using\s+[\w., ]+", 4),
+            (r"^\s*function\s+\w+\s*\([^)]*\)", 4),
+            (r"\bdataframe\s*\(", 3),
+            (r"\bprintln\s*\(", 2),
+            (r"^\s*end\s*$", 1),
+        ],
+    },
+    {
+        "language": "Solidity",
+        "confidence": 98,
+        "evidence": "Solidity syntax: pragma solidity, contract, mapping, address, msg.sender, or external/public functions.",
+        "threshold": 5,
+        "patterns": [
+            (r"pragma\s+solidity\b", 6),
+            (r"\bcontract\s+\w+\s*\{", 5),
+            (r"\bmapping\s*\(", 3),
+            (r"\bmsg\.sender\b", 3),
+            (r"\bfunction\s+\w+\s*\([^)]*\)\s*(public|external|internal|private)\b", 3),
+        ],
+    },
+    {
+        "language": "Terraform",
+        "confidence": 96,
+        "evidence": "Terraform/HCL syntax: resource/provider/variable blocks and var.* references.",
+        "threshold": 5,
+        "patterns": [
+            (r"^\s*resource\s+\"[^\"]+\"\s+\"[^\"]+\"\s*\{", 6),
+            (r"^\s*provider\s+\"[^\"]+\"\s*\{", 5),
+            (r"^\s*variable\s+\"[^\"]+\"\s*\{", 4),
+            (r"\bvar\.\w+\b", 3),
+            (r"^\s*terraform\s*\{", 3),
+        ],
+    },
+    {
+        "language": "Dockerfile",
+        "confidence": 96,
+        "evidence": "Dockerfile syntax: FROM, RUN, COPY, EXPOSE, CMD, or ENTRYPOINT instructions.",
+        "threshold": 5,
+        "patterns": [
+            (r"^\s*from\s+[\w./:-]+", 5),
+            (r"^\s*run\s+.+", 2),
+            (r"^\s*copy\s+.+", 2),
+            (r"^\s*expose\s+\d+", 2),
+            (r"^\s*(cmd|entrypoint)\s+", 2),
+        ],
+    },
+    {
+        "language": "YAML",
+        "confidence": 88,
+        "evidence": "YAML syntax: key/value indentation, lists, apiVersion/kind, services, or GitHub Actions workflow keys.",
+        "threshold": 6,
+        "patterns": [
+            (r"^\s*apiversion\s*:", 4),
+            (r"^\s*kind\s*:", 3),
+            (r"^\s*services\s*:", 4),
+            (r"^\s*on\s*:\s*$", 3),
+            (r"^\s*-\s+\w+:", 3),
+            (r"^\s+\w[\w-]*\s*:", 2),
+        ],
+    },
+]
 
 
 def _cache_limit() -> int:
@@ -283,6 +474,27 @@ def _code_looks_like_node_js(code_lower: str) -> bool:
     )
 
 
+def _signature_language_detection(code_lower: str) -> tuple[str | None, int | None, str | None]:
+    best_language: str | None = None
+    best_confidence: int | None = None
+    best_evidence: str | None = None
+    best_score = 0
+
+    for profile in _LANGUAGE_SIGNATURES:
+        score = 0
+        for pattern, weight in profile["patterns"]:
+            if re.search(pattern, code_lower, re.MULTILINE):
+                score += weight
+
+        if score >= profile["threshold"] and score > best_score:
+            best_language = str(profile["language"])
+            best_confidence = int(profile["confidence"])
+            best_evidence = str(profile["evidence"])
+            best_score = score
+
+    return best_language, best_confidence, best_evidence
+
+
 def _syntax_language_detection(code: str) -> tuple[str | None, int | None, str | None]:
     code_lower = code.lower()
 
@@ -300,6 +512,10 @@ def _syntax_language_detection(code: str) -> tuple[str | None, int | None, str |
     for language, confidence, evidence, matched in strong_checks:
         if matched:
             return language, confidence, evidence
+
+    signature_language, signature_confidence, signature_evidence = _signature_language_detection(code_lower)
+    if signature_language:
+        return signature_language, signature_confidence, signature_evidence
 
     if re.search(r"\binterface\s+\w+|\btype\s+\w+\s*=|:\s*(string|number|boolean)\b|import\s+type\b", code_lower):
         return "TypeScript", 92, "TypeScript syntax: interfaces, type aliases, typed parameters, or import type."
@@ -461,7 +677,7 @@ def _canonical_language_name(value: str | None) -> str | None:
 
 
 def _language_from_ai_summary(summary: str) -> str | None:
-    language_pattern = r"(crystal|clojure|compojure|elixir|python|ruby|lua|openresty|nginx lua|perl|mojolicious|javascript|typescript|node\.js|java|c\+\+|c#|sql|go|rust|php|kotlin|swift|bash|nim)"
+    language_pattern = r"(crystal|clojure|compojure|elixir|python|ruby|lua|openresty|nginx lua|perl|mojolicious|javascript|typescript|node\.js|java|c\+\+|c#|sql|go|rust|php|kotlin|swift|bash|nim|dart|flutter|scala|haskell|erlang|f#|fsharp|objective-c|objc|vb\.net|visual basic|r|julia|solidity|terraform|hcl|dockerfile|yaml|yml)"
     summary_lower = summary.lower()
     patterns = [
         rf"\b(?:the|this|provided|pasted)\s+{language_pattern}\s+(?:code|application|app|service|script|program)\b",
@@ -1846,6 +2062,8 @@ import jester/proc/routes/when isMainModule is Nim;
 ns/defn/defroutes/:require/clojure.java.jdbc/ring.adapter.jetty/compojure.core is Clojure;
 local function/local variables/require "resty.http"/require "cjson"/ngx.req/ngx.var/lsqlite3 is Lua/OpenResty;
 use strict/use warnings/my $var/sub name/Mojolicious::Lite/app->start is Perl;
+pragma solidity/contract/mapping/msg.sender is Solidity; resource/provider/variable blocks are Terraform/HCL;
+package:flutter/runApp/Widget build is Dart/Flutter; -module/-export/function -> clauses are Erlang;
 require('express') or app.post(...) is JavaScript/Node.js.
 Do not classify Perl or Mojolicious code as C++ just because it uses -> method syntax.
 SQL keywords inside strings are a SQL injection risk, but they do not make the whole pasted code SQL.
@@ -1915,6 +2133,10 @@ SQL keywords embedded inside application strings are not enough to classify the 
 Perl/Mojolicious syntax includes use strict, use warnings, my $variable, sub name, DBI->connect, $c->render, and app->start.
 Clojure/Ring/Compojure syntax includes (ns ...), (defn ...), (defroutes ...), :require vectors, clojure.java.jdbc, jdbc/query, and run-jetty.
 Lua/OpenResty syntax includes local function, local variables, require "cjson", require "lsqlite3", require "resty.http", ngx.req, ngx.var, ngx.say, cjson.decode, and cjson.encode.
+Solidity syntax includes pragma solidity, contract, mapping, address, msg.sender, and public/external functions.
+Terraform/HCL syntax includes resource/provider/variable blocks, terraform blocks, and var.* references.
+Dart/Flutter syntax includes package:flutter imports, runApp, Widget build, StatelessWidget, and StatefulWidget.
+Erlang syntax includes -module(...), -export([...]), function clauses with ->, receive, and spawn.
 Do not return C++ for Perl code just because Perl uses -> method calls.
 Do not return SQL for Lua/OpenResty code just because it builds SQL strings.
 Return SQL only for standalone SQL scripts or mostly raw SQL.

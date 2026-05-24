@@ -516,6 +516,99 @@ end""",
     assert review.risk_score >= 80
 
 
+def test_solidity_contract_auto_detects_solidity_not_javascript():
+    code = """pragma solidity ^0.8.20;
+
+contract Escrow {
+    mapping(address => uint256) public balances;
+
+    function deposit() external payable {
+        balances[msg.sender] += msg.value;
+    }
+}"""
+
+    assert _detected_review_language("Auto", code) == "Solidity"
+
+
+def test_terraform_code_auto_detects_terraform_not_bash():
+    code = '''provider "aws" {
+  region = var.region
+}
+
+resource "aws_instance" "web" {
+  ami           = var.ami_id
+  instance_type = "t3.micro"
+}
+
+variable "region" {
+  type = string
+}'''
+
+    assert _detected_review_language("Auto", code) == "Terraform"
+
+
+def test_dart_flutter_code_auto_detects_dart_not_javascript():
+    code = """import 'package:flutter/material.dart';
+
+void main() {
+  runApp(const MyApp());
+}
+
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return const MaterialApp(home: Text('Demo'));
+  }
+}"""
+
+    assert _detected_review_language("Auto", code) == "Dart"
+
+
+def test_erlang_code_auto_detects_erlang_not_elixir():
+    code = """-module(payment_worker).
+-export([start/0, charge/2]).
+
+start() ->
+    receive
+        {charge, UserId, Amount} -> charge(UserId, Amount)
+    end.
+
+charge(UserId, Amount) ->
+    {ok, UserId, Amount}."""
+
+    assert _detected_review_language("Auto", code) == "Erlang"
+
+
+def test_julia_code_auto_detects_julia_not_python():
+    code = """using DataFrames
+
+function calculate_total(items)
+    total = 0
+    for item in items
+        total += item.price
+    end
+    println(total)
+    return DataFrame(total = [total])
+end"""
+
+    assert _detected_review_language("Auto", code) == "Julia"
+
+
+def test_r_code_auto_detects_r_not_python():
+    code = """library(dplyr)
+
+calculate_total <- function(items) {
+  result <- data.frame(total = sum(items$price))
+  return(result)
+}
+
+print(calculate_total(items))"""
+
+    assert _detected_review_language("Auto", code) == "R"
+
+
 def test_language_detection_prompt_uses_short_sample_for_large_code():
     code = "\n".join([f"line_{index}" for index in range(400)])
     prompt = _ai_language_detection_prompt(code)
