@@ -46,6 +46,9 @@ _LANGUAGE_ALIASES = {
     "c": "C",
     "c#": "C#",
     "c++": "C++",
+    "clojure": "Clojure",
+    "clj": "Clojure",
+    "compojure": "Clojure",
     "cpp": "C++",
     "css": "CSS",
     "crystal": "Crystal",
@@ -214,6 +217,22 @@ def _code_looks_like_nim(code_lower: str) -> bool:
     )
 
 
+def _code_looks_like_clojure(code_lower: str) -> bool:
+    return bool(
+        re.search(r"^\s*\(ns\s+[\w.-]+", code_lower, re.MULTILINE)
+        or re.search(r"^\s*\(defn\s+[\w!?\-]+", code_lower, re.MULTILINE)
+        or re.search(r"^\s*\(defroutes\s+\w+", code_lower, re.MULTILINE)
+        or re.search(r":require\s+\[", code_lower)
+        or "clojure.java.jdbc" in code_lower
+        or "ring.adapter.jetty" in code_lower
+        or "compojure.core" in code_lower
+        or "jdbc/query" in code_lower
+        or "jdbc/execute!" in code_lower
+        or "run-jetty" in code_lower
+        or "wrap-json-body" in code_lower
+    )
+
+
 def _code_looks_like_perl(code_lower: str) -> bool:
     return bool(
         re.search(
@@ -247,6 +266,7 @@ def _syntax_language_detection(code: str) -> tuple[str | None, int | None, str |
         ("Perl", 98, "Perl/Mojolicious syntax: use strict, my $variable, sub, DBI->connect, $c->render, or app->start.", _code_looks_like_perl(code_lower)),
         ("Elixir", 98, "Elixir syntax: defmodule, @module attributes, Postgrex, Jason, or DateTime.utc_now().", _code_looks_like_elixir(code_lower)),
         ("Nim", 98, "Nim/Jester syntax: import jester, proc declarations, routes:, when isMainModule, or runForever().", _code_looks_like_nim(code_lower)),
+        ("Clojure", 98, "Clojure/Ring syntax: (ns ...), (defn ...), defroutes, :require vectors, clojure.java.jdbc, or run-jetty.", _code_looks_like_clojure(code_lower)),
         ("Ruby", 96, "Ruby/Sinatra syntax: require 'sinatra', route blocks with do/end, SQLite3::Database, or Net::HTTP.", _code_looks_like_ruby(code_lower)),
         ("JavaScript", 96, "JavaScript/Node.js syntax: require/import with Express, axios, fs, child_process, app.get/app.post, or module.exports.", _code_looks_like_node_js(code_lower)),
     ]
@@ -278,7 +298,7 @@ def _syntax_language_detection(code: str) -> tuple[str | None, int | None, str |
     if re.search(r"^\s*#!/(?:usr/bin/env\s+)?(?:bash|sh)\b|^\s*(echo|grep|awk|sed|curl)\b|\$\{?\w+\}?", code_lower, re.MULTILINE):
         return "Bash", 82, "Shell syntax: bash/shebang, shell commands, or environment variable expansion."
     if re.search(r"\b(select|insert|update|delete)\b", code_lower) and not re.search(
-        r"^\s*(def|function|sub|proc|class|import|require|use|package|public|private|post|get)\b",
+        r"^\s*(?:\(|)(defn?|ns|defroutes|function|sub|proc|class|import|require|use|package|public|private|post|get)\b",
         code_lower,
         re.MULTILINE,
     ):
@@ -309,6 +329,8 @@ def _detected_review_language(selected_language: str, code: str) -> str:
         return "Elixir"
     if _code_looks_like_nim(code_lower):
         return "Nim"
+    if _code_looks_like_clojure(code_lower):
+        return "Clojure"
     if _code_looks_like_perl(code_lower):
         return "Perl"
     if _code_looks_like_node_js(code_lower):
@@ -411,7 +433,7 @@ def _canonical_language_name(value: str | None) -> str | None:
 
 
 def _language_from_ai_summary(summary: str) -> str | None:
-    language_pattern = r"(crystal|elixir|python|ruby|perl|mojolicious|javascript|typescript|node\.js|java|c\+\+|c#|sql|go|rust|php|kotlin|swift|bash|nim)"
+    language_pattern = r"(crystal|clojure|compojure|elixir|python|ruby|perl|mojolicious|javascript|typescript|node\.js|java|c\+\+|c#|sql|go|rust|php|kotlin|swift|bash|nim)"
     summary_lower = summary.lower()
     patterns = [
         rf"\b(?:the|this|provided|pasted)\s+{language_pattern}\s+(?:code|application|app|service|script|program)\b",
@@ -1745,6 +1767,7 @@ Do not copy any local/default language hint when manual language selection is no
 Use syntax evidence for language detection: defmodule/do/end/Postgrex/Jason is Elixir;
 require "sinatra" with do/end is Ruby; require "kemal"/do |env|/.as_s/Kemal.run is Crystal;
 import jester/proc/routes/when isMainModule is Nim;
+ns/defn/defroutes/:require/clojure.java.jdbc/ring.adapter.jetty/compojure.core is Clojure;
 use strict/use warnings/my $var/sub name/Mojolicious::Lite/app->start is Perl;
 require('express') or app.post(...) is JavaScript/Node.js.
 Do not classify Perl or Mojolicious code as C++ just because it uses -> method syntax.
@@ -1812,6 +1835,7 @@ Detect the main programming language of pasted code before any review happens.
 Use syntax evidence, not vulnerability type.
 SQL keywords embedded inside application strings are not enough to classify the whole code as SQL.
 Perl/Mojolicious syntax includes use strict, use warnings, my $variable, sub name, DBI->connect, $c->render, and app->start.
+Clojure/Ring/Compojure syntax includes (ns ...), (defn ...), (defroutes ...), :require vectors, clojure.java.jdbc, jdbc/query, and run-jetty.
 Do not return C++ for Perl code just because Perl uses -> method calls.
 Return SQL only for standalone SQL scripts or mostly raw SQL.
 Your JSON must match this structure:

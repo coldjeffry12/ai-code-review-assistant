@@ -409,6 +409,38 @@ app->start;"""
     assert _detected_review_language("Auto", code) == "Perl"
 
 
+def test_clojure_ring_compojure_code_auto_detects_clojure_not_sql():
+    code = """(ns logistics-risk-platform.core
+  (:require [ring.adapter.jetty :refer [run-jetty]]
+            [ring.middleware.json :refer [wrap-json-body wrap-json-response]]
+            [compojure.core :refer [defroutes GET POST DELETE]]
+            [clojure.java.jdbc :as jdbc]
+            [cheshire.core :as json]))
+
+(def admin-token "demo-admin-token")
+
+(defn login [email password]
+  (let [sql (str "SELECT id, email, role FROM users WHERE email = '"
+                 email "' AND password = '" password "'")
+        user (first (jdbc/query db-spec [sql]))]
+    {:user-id (:id user)}))
+
+(defroutes app-routes
+  (POST "/login" req
+    (let [{:keys [email password]} (:body req)]
+      (login email password))))
+
+(def app
+  (-> app-routes
+      wrap-json-body
+      wrap-json-response))
+
+(defn -main []
+  (run-jetty app {:port 3000 :join? false}))"""
+
+    assert _detected_review_language("Auto", code) == "Clojure"
+
+
 def test_language_detection_prompt_uses_short_sample_for_large_code():
     code = "\n".join([f"line_{index}" for index in range(400)])
     prompt = _ai_language_detection_prompt(code)
@@ -544,6 +576,46 @@ def test_malformed_ai_json_summary_is_extracted_without_raw_json_improvement():
     assert review.reviewed_language == "Perl"
     assert "perl application" in review.summary.lower()
     assert all('"summary"' not in improvement for improvement in review.improvements)
+
+
+def test_ai_sql_language_metadata_is_corrected_for_clojure_application_code():
+    review = _review_from_ai_json(
+        {
+            "summary": "AI review completed. The code has SQL injection and command injection risks.",
+            "detected_language": "SQL",
+            "reviewed_language": "SQL",
+            "risk_score": 100,
+            "bugs": [
+                {
+                    "title": "SQL injection",
+                    "severity": "Critical",
+                    "explanation": "The query concatenates user input.",
+                    "suggested_fix": "Use parameterized queries.",
+                }
+            ],
+            "improvements": ["Validate route input."],
+            "test_cases": ["Test SQL injection payloads are rejected."],
+            "fixed_code": None,
+        },
+        ReviewRequest(
+            code="""(ns logistics-risk-platform.core
+  (:require [compojure.core :refer [defroutes POST]]
+            [clojure.java.jdbc :as jdbc]))
+
+(defn login [email]
+  (let [sql (str "SELECT id FROM users WHERE email = '" email "'")]
+    (first (jdbc/query db-spec [sql]))))
+
+(defroutes app-routes
+  (POST "/login" req (login (:email (:body req)))))""",
+            focus="security",
+        ),
+    )
+
+    assert review.detected_language == "Clojure"
+    assert review.reviewed_language == "Clojure"
+    assert review.language_detection_confidence == 98
+    assert "Clojure" in review.language_detection_evidence
 
 
 def test_ai_sql_language_metadata_is_corrected_for_nim_application_code():
