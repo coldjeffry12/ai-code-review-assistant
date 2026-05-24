@@ -566,6 +566,72 @@ class MyApp extends StatelessWidget {
     assert _detected_review_language("Auto", code) == "Dart"
 
 
+def test_ocaml_opium_code_auto_detects_ocaml_not_javascript():
+    code = """open Lwt.Infix
+open Opium
+open Yojson.Safe
+open Cohttp_lwt_unix
+
+let db_path = "pharmacy_claims.db"
+let admin_token = "demo-admin-token"
+
+let login req =
+  let body = Request.to_json_exn req in
+  let email = body |> Util.member "email" |> Util.to_string in
+  let sql =
+    "SELECT id FROM users WHERE email = '"
+    ^ email
+    ^ "'"
+  in
+  json_response (`Assoc [ ("sql", `String sql) ])
+
+let app =
+  App.empty
+  |> App.post "/login" login
+  |> App.get "/prescriptions/:id" get_prescription
+
+let () =
+  App.run_command app"""
+
+    assert _detected_review_language("Auto", code) == "OCaml"
+
+
+def test_ocaml_fallback_detects_sql_command_and_path_risks():
+    review = _fallback_review(
+        ReviewRequest(
+            code="""open Lwt.Infix
+open Opium
+open Yojson.Safe
+
+let login req =
+  let body = Request.to_json_exn req in
+  let email = body |> Util.member "email" |> Util.to_string in
+  let sql = "SELECT id FROM users WHERE email = '" ^ email ^ "'" in
+  json_response (`Assoc [ ("sql", `String sql) ])
+
+let backup_database req =
+  let body = Request.to_json_exn req in
+  let backup_name = body |> Util.member "backup_name" |> Util.to_string in
+  let command = "sqlite3 app.db .dump > backups/" ^ backup_name in
+  ignore (Sys.command command)
+
+let upload req =
+  let body = Request.to_json_exn req in
+  let filename = body |> Util.member "filename" |> Util.to_string in
+  let file_path = "uploads/" ^ filename in
+  let oc = open_out file_path in
+  output_string oc "demo";
+  close_out oc""",
+            focus="security",
+        )
+    )
+
+    categories = {_bug_category(bug) for bug in review.bugs}
+    assert review.detected_language == "OCaml"
+    assert {"sql_injection", "command_injection", "path_traversal"}.issubset(categories)
+    assert review.risk_score == 100
+
+
 def test_erlang_code_auto_detects_erlang_not_elixir():
     code = """-module(payment_worker).
 -export([start/0, charge/2]).
@@ -887,6 +953,88 @@ def test_ai_language_detection_overrides_local_hint():
 
     assert review.detected_language == "JavaScript"
     assert review.reviewed_language == "JavaScript"
+
+
+def test_strong_syntax_detection_overrides_wrong_ai_language_before_review(monkeypatch):
+    calls = {"count": 0, "prompts": []}
+    language_content = json.dumps(
+        {
+            "detected_language": "JavaScript",
+            "confidence": 0.96,
+            "evidence": "Mistook App.post for Express.",
+        }
+    )
+    review_content = json.dumps(
+        {
+            "summary": "The OCaml Opium application has unsafe SQL construction.",
+            "detected_language": "JavaScript",
+            "reviewed_language": "JavaScript",
+            "risk_score": 80,
+            "bugs": [
+                {
+                    "title": "SQL injection",
+                    "severity": "Critical",
+                    "explanation": "The query concatenates user input.",
+                    "suggested_fix": "Use parameterized queries.",
+                }
+            ],
+            "improvements": ["Use safer database access."],
+            "test_cases": ["Test SQL injection payloads are rejected."],
+            "fixed_code": None,
+        }
+    )
+
+    class FakeMessage:
+        def __init__(self, content: str):
+            self.content = content
+
+    class FakeChoice:
+        def __init__(self, content: str):
+            self.message = FakeMessage(content)
+
+    class FakeCompletion:
+        def __init__(self, content: str):
+            self.choices = [FakeChoice(content)]
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            calls["count"] += 1
+            calls["prompts"].append(kwargs["messages"][-1]["content"])
+            if calls["count"] == 1:
+                return FakeCompletion(language_content)
+            return FakeCompletion(review_content)
+
+    class FakeChat:
+        completions = FakeCompletions()
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.chat = FakeChat()
+
+    code = """open Lwt.Infix
+open Opium
+open Yojson.Safe
+
+let login req =
+  let body = Request.to_json_exn req in
+  let email = body |> Util.member "email" |> Util.to_string in
+  let sql = "SELECT id FROM users WHERE email = '" ^ email ^ "'" in
+  json_response (`Assoc [ ("sql", `String sql) ])
+
+let app =
+  App.empty
+  |> App.post "/login" login"""
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr("app.services.reviewer.OpenAI", FakeClient)
+    _clear_review_cache()
+
+    review = asyncio.run(review_code(ReviewRequest(code=code, focus="security")))
+
+    assert calls["count"] >= 2
+    assert "AI language detection step result:\nOCaml" in calls["prompts"][1]
+    assert review.detected_language == "OCaml"
+    assert review.reviewed_language == "OCaml"
 
 
 def test_safe_retry_prompt_redacts_dangerous_literals():

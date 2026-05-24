@@ -76,6 +76,7 @@ _LANGUAGE_ALIASES = {
     "nim": "Nim",
     "objc": "Objective-C",
     "objective-c": "Objective-C",
+    "ocaml": "OCaml",
     "openresty": "Lua",
     "perl": "Perl",
     "php": "PHP",
@@ -226,6 +227,21 @@ _LANGUAGE_SIGNATURES: list[dict[str, Any]] = [
             (r"\bmapping\s*\(", 3),
             (r"\bmsg\.sender\b", 3),
             (r"\bfunction\s+\w+\s*\([^)]*\)\s*(public|external|internal|private)\b", 3),
+        ],
+    },
+    {
+        "language": "OCaml",
+        "confidence": 98,
+        "evidence": "OCaml/Opium syntax: open Lwt/Opium, let bindings, |> pipelines, >>= Lwt binds, variant matches, or App.post/App.get routes.",
+        "threshold": 5,
+        "patterns": [
+            (r"^\s*open\s+(?:lwt|opium|yojson|cohttp|sqlite3)\b", 5),
+            (r"\bapp\.(?:post|get|put|delete)\s+\"[^\"]+\"", 5),
+            (r"\|\>\s*\w+", 3),
+            (r">>=\s*fun\b", 4),
+            (r"\bmatch\s+.+\s+with\b", 3),
+            (r"^\s*let\s+\w+[^=]*=", 2),
+            (r"`assoc\s*\[", 3),
         ],
     },
     {
@@ -467,10 +483,23 @@ def _code_looks_like_perl(code_lower: str) -> bool:
 
 
 def _code_looks_like_node_js(code_lower: str) -> bool:
-    if _code_looks_like_ruby(code_lower):
+    if _code_looks_like_ruby(code_lower) or _code_looks_like_ocaml(code_lower):
         return False
     return any(marker in code_lower for marker in _NODE_MARKERS) or bool(
         re.search(r"\b(require|import)\s*\(?\s*['\"](?:express|axios|fs|jsonwebtoken|child_process)['\"]", code_lower)
+    )
+
+
+def _code_looks_like_ocaml(code_lower: str) -> bool:
+    return bool(
+        re.search(r"^\s*open\s+(?:lwt|opium|yojson|cohttp|sqlite3)\b", code_lower, re.MULTILINE)
+        or re.search(r"\bapp\.(?:post|get|put|delete)\s+\"[^\"]+\"", code_lower)
+        or "lwt.infix" in code_lower
+        or "yojson.safe" in code_lower
+        or "cohttp_lwt_unix" in code_lower
+        or "opium" in code_lower and re.search(r"^\s*let\s+\w+[^=]*=", code_lower, re.MULTILINE)
+        or ">>= fun" in code_lower
+        or "`assoc" in code_lower
     )
 
 
@@ -505,6 +534,7 @@ def _syntax_language_detection(code: str) -> tuple[str | None, int | None, str |
         ("Nim", 98, "Nim/Jester syntax: import jester, proc declarations, routes:, when isMainModule, or runForever().", _code_looks_like_nim(code_lower)),
         ("Clojure", 98, "Clojure/Ring syntax: (ns ...), (defn ...), defroutes, :require vectors, clojure.java.jdbc, or run-jetty.", _code_looks_like_clojure(code_lower)),
         ("Lua", 98, 'Lua/OpenResty syntax: local function/local variables, require "resty.http"/"cjson"/"lsqlite3", ngx.req, ngx.var, or cjson.encode.', _code_looks_like_lua(code_lower)),
+        ("OCaml", 98, "OCaml/Opium syntax: open Lwt/Opium, let bindings, |> pipelines, >>= Lwt binds, variant matches, or App.post/App.get routes.", _code_looks_like_ocaml(code_lower)),
         ("Ruby", 96, "Ruby/Sinatra syntax: require 'sinatra', route blocks with do/end, SQLite3::Database, or Net::HTTP.", _code_looks_like_ruby(code_lower)),
         ("JavaScript", 96, "JavaScript/Node.js syntax: require/import with Express, axios, fs, child_process, app.get/app.post, or module.exports.", _code_looks_like_node_js(code_lower)),
     ]
@@ -677,7 +707,7 @@ def _canonical_language_name(value: str | None) -> str | None:
 
 
 def _language_from_ai_summary(summary: str) -> str | None:
-    language_pattern = r"(crystal|clojure|compojure|elixir|python|ruby|lua|openresty|nginx lua|perl|mojolicious|javascript|typescript|node\.js|java|c\+\+|c#|sql|go|rust|php|kotlin|swift|bash|nim|dart|flutter|scala|haskell|erlang|f#|fsharp|objective-c|objc|vb\.net|visual basic|r|julia|solidity|terraform|hcl|dockerfile|yaml|yml)"
+    language_pattern = r"(crystal|clojure|compojure|elixir|python|ruby|lua|openresty|nginx lua|perl|mojolicious|ocaml|javascript|typescript|node\.js|java|c\+\+|c#|sql|go|rust|php|kotlin|swift|bash|nim|dart|flutter|scala|haskell|erlang|f#|fsharp|objective-c|objc|vb\.net|visual basic|r|julia|solidity|terraform|hcl|dockerfile|yaml|yml)"
     summary_lower = summary.lower()
     patterns = [
         rf"\b(?:the|this|provided|pasted)\s+{language_pattern}\s+(?:code|application|app|service|script|program)\b",
@@ -1205,7 +1235,7 @@ def _has_hardcoded_secret(code_lower: str) -> bool:
 def _has_unsafe_sql_construction(code_lower: str) -> bool:
     has_sql = re.search(r"\b(select|insert|update|delete)\b", code_lower)
     has_concat_or_format = re.search(
-        r"(\+\s*\w+|\.\.\s*[\w.]+|f[\"']|`[^`]*\$\{|#\{|\.format\s*\(|%\s*\(|req\.(?:body|query|params)|params\s*\[)",
+        r"(\+\s*\w+|\.\.\s*[\w.]+|\^\s*[\w(]|f[\"']|`[^`]*\$\{|#\{|\.format\s*\(|%\s*\(|req\.(?:body|query|params)|params\s*\[)",
         code_lower,
         re.DOTALL,
     )
@@ -1218,7 +1248,8 @@ def _has_raw_card_handling(code_lower: str) -> bool:
 
 def _has_unsafe_path_construction(code_lower: str) -> bool:
     user_vars = _user_input_variables(code_lower)
-    has_file_write = re.search(r"\b(open|write_text|write_bytes)\s*\(", code_lower) or ".save(" in code_lower
+    has_file_write = re.search(r"\b(open|open_out|open_in|write_text|write_bytes|io\.open)\s*\(", code_lower) or ".save(" in code_lower
+    has_file_write = has_file_write or re.search(r"\b(open_out|open_in)\s+\w+", code_lower)
     has_file_write = has_file_write or "fs.writefile" in code_lower or "fs.promises.writefile" in code_lower
     has_user_filename = re.search(r"\b(filename|file_name|path|upload|user_input|email)\b", code_lower) or bool({"filename", "file_name", "path", "email", "upload"} & user_vars)
     has_path_join = "os.path.join" in code_lower or "pathlib.path" in code_lower or "path.join" in code_lower or "/" in code_lower
@@ -1249,7 +1280,7 @@ def _has_shell_command_injection(code_lower: str) -> bool:
     }
     has_shell_exec = bool(
         re.search(
-            r"(os\.execute|system\s*\(|execmd\s*\(|system\.cmd\s*\(|system\.cmd|system\.cmd\(|exec_cmd\s*\(|subprocess\.|:\s*os\.cmd|\bsh\s+\"sh\"\s+\"-c\")",
+            r"(os\.execute|sys\.command|system\s*\(|execmd\s*\(|system\.cmd\s*\(|system\.cmd|system\.cmd\(|exec_cmd\s*\(|subprocess\.|:\s*os\.cmd|\bsh\s+\"sh\"\s+\"-c\")",
             code_lower,
         )
     )
@@ -2061,6 +2092,7 @@ require "sinatra" with do/end is Ruby; require "kemal"/do |env|/.as_s/Kemal.run 
 import jester/proc/routes/when isMainModule is Nim;
 ns/defn/defroutes/:require/clojure.java.jdbc/ring.adapter.jetty/compojure.core is Clojure;
 local function/local variables/require "resty.http"/require "cjson"/ngx.req/ngx.var/lsqlite3 is Lua/OpenResty;
+open Lwt/open Opium/let bindings/|> pipelines/>>= fun/App.post/App.get is OCaml/Opium;
 use strict/use warnings/my $var/sub name/Mojolicious::Lite/app->start is Perl;
 pragma solidity/contract/mapping/msg.sender is Solidity; resource/provider/variable blocks are Terraform/HCL;
 package:flutter/runApp/Widget build is Dart/Flutter; -module/-export/function -> clauses are Erlang;
@@ -2133,6 +2165,7 @@ SQL keywords embedded inside application strings are not enough to classify the 
 Perl/Mojolicious syntax includes use strict, use warnings, my $variable, sub name, DBI->connect, $c->render, and app->start.
 Clojure/Ring/Compojure syntax includes (ns ...), (defn ...), (defroutes ...), :require vectors, clojure.java.jdbc, jdbc/query, and run-jetty.
 Lua/OpenResty syntax includes local function, local variables, require "cjson", require "lsqlite3", require "resty.http", ngx.req, ngx.var, ngx.say, cjson.decode, and cjson.encode.
+OCaml/Opium syntax includes open Lwt, open Opium, let bindings, |> pipelines, >>= fun binds, `Assoc variants, and App.post/App.get routes.
 Solidity syntax includes pragma solidity, contract, mapping, address, msg.sender, and public/external functions.
 Terraform/HCL syntax includes resource/provider/variable blocks, terraform blocks, and var.* references.
 Dart/Flutter syntax includes package:flutter imports, runApp, Widget build, StatelessWidget, and StatefulWidget.
@@ -2210,6 +2243,7 @@ Your JSON must match this structure:
     safety_review = _fallback_review(payload)
 
     try:
+        syntax_detected_language, syntax_detected_confidence, syntax_detected_evidence = _syntax_language_detection(payload.code)
         try:
             ai_detected_language = await run_ai_language_detection()
             logger.info("AI language detection completed. detected_language=%s", ai_detected_language)
@@ -2221,6 +2255,21 @@ Your JSON must match this structure:
                 _safe_exception_summary(detection_exc),
                 ai_detected_language,
             )
+
+        canonical_ai_detected = _canonical_language_name(ai_detected_language) or ai_detected_language
+        if (
+            syntax_detected_language
+            and (syntax_detected_confidence or 0) >= 95
+            and canonical_ai_detected != syntax_detected_language
+        ):
+            logger.info(
+                "Strong syntax detection corrected AI language. ai_language=%s syntax_language=%s confidence=%s evidence=%s",
+                ai_detected_language,
+                syntax_detected_language,
+                syntax_detected_confidence,
+                syntax_detected_evidence,
+            )
+            ai_detected_language = syntax_detected_language
 
         review_prompt = _ai_review_prompt(
             payload,
