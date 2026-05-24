@@ -384,6 +384,201 @@ pub fn main() !void {
     assert _detected_review_language("Auto", code) == "Zig"
 
 
+def test_broad_language_fingerprints_detect_common_and_legacy_languages():
+    cases = [
+        (
+            "C",
+            """#include <stdio.h>
+#include <stdlib.h>
+
+int main(void) {
+    char *name = malloc(32);
+    printf("%s", name);
+    free(name);
+    return 0;
+}""",
+        ),
+        (
+            "C++",
+            """#include <iostream>
+#include <vector>
+
+template <typename T>
+class Box {
+public:
+    T value;
+};
+
+int main() {
+    std::cout << "ok";
+    return 0;
+}""",
+        ),
+        (
+            "PowerShell",
+            """param($Name)
+$env:APP_ENV = "dev"
+Get-Process | Where-Object { $_.Name -like "python*" } | Select-Object Name
+Write-Host $Name""",
+        ),
+        (
+            "CMake",
+            """cmake_minimum_required(VERSION 3.20)
+project(Demo)
+add_executable(demo main.c)
+target_link_libraries(demo PRIVATE m)""",
+        ),
+        (
+            "Makefile",
+            """.PHONY: build clean
+CC := gcc
+build: main.c
+\t$(CC) main.c -o app""",
+        ),
+        (
+            "Fortran",
+            """program hello
+implicit none
+integer :: count
+print *, "hello"
+end program hello""",
+        ),
+        (
+            "COBOL",
+            """IDENTIFICATION DIVISION.
+PROGRAM-ID. HELLO.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+PROCEDURE DIVISION.
+    PERFORM PRINT-MESSAGE.""",
+        ),
+        (
+            "Ada",
+            """with Ada.Text_IO;
+use Ada.Text_IO;
+
+procedure Hello is
+begin
+   Put_Line("hello");
+end Hello;""",
+        ),
+        (
+            "Pascal",
+            """program Hello;
+uses SysUtils;
+var
+  name: string;
+begin
+  writeln(name);
+end.""",
+        ),
+        (
+            "Prolog",
+            """parent(alice, bob).
+parent(bob, carol).
+ancestor(X, Y) :- parent(X, Y).
+ancestor(X, Y) :- parent(X, Z), ancestor(Z, Y).""",
+        ),
+        (
+            "Verilog",
+            """module counter(input clk, output reg done);
+always @(posedge clk) begin
+  done <= 1'b1;
+end
+endmodule""",
+        ),
+        (
+            "VHDL",
+            """library IEEE;
+use IEEE.STD_LOGIC_1164.ALL;
+
+entity Demo is
+  Port ( clk : in std_logic );
+end Demo;
+
+architecture Behavioral of Demo is
+signal ready : std_logic;
+begin
+end Behavioral;""",
+        ),
+        (
+            "HTML",
+            """<!DOCTYPE html>
+<html>
+<head><title>Demo</title></head>
+<body><main class="app"></main><script src="app.js"></script></body>
+</html>""",
+        ),
+        (
+            "CSS",
+            """.card {
+  display: flex;
+  color: #fff;
+  background: #111;
+}
+
+@media screen and (max-width: 600px) {
+  .card { padding: 8px; }
+}""",
+        ),
+        (
+            "JSON",
+            """{
+  "name": "demo",
+  "enabled": true,
+  "ports": [8000, 5173]
+}""",
+        ),
+        (
+            "TOML",
+            """[package]
+name = "demo"
+version = "1.0.0"
+
+[[bin]]
+name = "demo-cli" """,
+        ),
+        (
+            "Go",
+            """package main
+
+import "fmt"
+
+func main() {
+    value := "ok"
+    fmt.Println(value)
+}""",
+        ),
+        (
+            "Rust",
+            """use std::io;
+
+fn main() {
+    let mut value = String::new();
+    println!("{}", value);
+    match value.as_str() {
+        _ => {}
+    }
+}""",
+        ),
+        (
+            "PHP",
+            """<?php
+namespace App\\Http;
+
+use App\\Models\\User;
+
+function login($email) {
+    echo $email;
+}
+""",
+        ),
+    ]
+
+    for expected_language, code in cases:
+        assert _detected_review_language("Auto", code) == expected_language, expected_language
+
+
 def test_smalltalk_code_auto_detects_smalltalk_not_sql():
     code = """Object subclass: #ClinicInsuranceService
     instanceVariableNames: ''
