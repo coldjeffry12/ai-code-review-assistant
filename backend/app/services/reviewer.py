@@ -146,6 +146,7 @@ _LANGUAGE_ALIASES = {
     "openresty": "Lua",
     "pascal": "Pascal",
     "perl": "Perl",
+    "pike": "Pike",
     "php": "PHP",
     "plantuml": "PlantUML",
     "plsql": "PL/SQL",
@@ -213,6 +214,22 @@ _LANGUAGE_ALIASES = {
 }
 
 _LANGUAGE_SIGNATURES: list[dict[str, Any]] = [
+    {
+        "language": "Pike",
+        "confidence": 96,
+        "evidence": "Pike syntax: import Stdio/Sql/Standards.JSON/Protocols.HTTP, constant declarations, mapping/array/object types, ([ ... ]) mappings, -> method calls, and Process.create_process.",
+        "threshold": 6,
+        "patterns": [
+            (r"^\s*import\s+(?:stdio|sql|standards\.json|protocols\.http)\s*;", 5),
+            (r"^\s*constant\s+\w+\s*=", 4),
+            (r"\b(mapping|array|object|string|float|int)\s+\w+\s*(?:\(|=)", 3),
+            (r"\(\[\s*(?:\"[^\"]+\"\s*:|[^\]]+)\]\)", 4),
+            (r"->\s*\w+\s*\(", 3),
+            (r"\bprocess\.create_process\s*\(", 5),
+            (r"\bstandards\.json\.(?:encode|decode)\s*\(", 4),
+            (r"\bprotocols\.http\.\w+", 4),
+        ],
+    },
     {
         "language": "Haxe",
         "confidence": 92,
@@ -1923,6 +1940,7 @@ def _code_looks_like_node_js(code_lower: str) -> bool:
         or _code_looks_like_ocaml(code_lower)
         or _code_looks_like_d(code_lower)
         or _code_looks_like_zig(code_lower)
+        or _code_looks_like_pike(code_lower)
     ):
         return False
     return any(marker in code_lower for marker in _NODE_MARKERS) or bool(
@@ -1996,6 +2014,35 @@ def _code_looks_like_zig(code_lower: str) -> bool:
     )
 
 
+def _code_looks_like_pike(code_lower: str) -> bool:
+    return bool(
+        re.search(r"^\s*import\s+(?:stdio|sql|standards\.json|protocols\.http)\s*;", code_lower, re.MULTILINE)
+        or (
+            re.search(r"^\s*constant\s+\w+\s*=", code_lower, re.MULTILINE)
+            and re.search(r"\b(mapping|array|object|string|float|int)\s+\w+\s*(?:\(|=)", code_lower)
+        )
+        or "process.create_process" in code_lower
+        or "standards.json." in code_lower
+        or "protocols.http." in code_lower
+        or (re.search(r"\(\[\s*\"[^\"]+\"\s*:", code_lower) and "->" in code_lower)
+    )
+
+
+def _code_looks_executable_not_data(code_lower: str) -> bool:
+    return bool(
+        re.search(
+            r"^\s*(import|package|namespace|class|def|defn|fn|func|function|proc|sub|module|using|use|require|constant|mapping|array|object|string|float|int|void|public|private|protected|open|let|local|enum|struct)\b",
+            code_lower,
+            re.MULTILINE,
+        )
+        or re.search(r"\b\w+\s+\w+\s*\([^)]*\)\s*\{", code_lower)
+        or re.search(r"->\s*\w+\s*\(", code_lower)
+        or re.search(r";\s*$", code_lower, re.MULTILINE)
+        or "object subclass:" in code_lower
+        or "defmodule " in code_lower
+    )
+
+
 def _signature_language_detection(code_lower: str) -> tuple[str | None, int | None, str | None]:
     best_language: str | None = None
     best_confidence: int | None = None
@@ -2009,6 +2056,8 @@ def _signature_language_detection(code_lower: str) -> tuple[str | None, int | No
                 score += weight
 
         if score >= profile["threshold"] and score > best_score:
+            if profile["language"] == "JSON" and _code_looks_executable_not_data(code_lower):
+                continue
             best_language = str(profile["language"])
             best_confidence = int(profile["confidence"])
             best_evidence = str(profile["evidence"])
@@ -2039,6 +2088,7 @@ def _syntax_language_detection(code: str) -> tuple[str | None, int | None, str |
         ("D", 98, "D/vibe.d syntax: import vibe.d/std.*, enum constants, HTTPServerRequest/HTTPServerResponse, URLRouter, listenHTTP, runApplication, or ~ string concatenation.", _code_looks_like_d(code_lower)),
         ("Smalltalk", 98, "Smalltalk syntax: Object subclass:, class >> methods, := assignment, ^ returns, | local variables |, Dictionary new cascades, or message keywords ending with colon.", _code_looks_like_smalltalk(code_lower)),
         ("Zig", 98, 'Zig syntax: @import("std"), pub fn/fn with ! error unions, []const u8 slices, std.mem.Allocator, try, and .{ } literals.', _code_looks_like_zig(code_lower)),
+        ("Pike", 98, "Pike syntax: import Stdio/Sql/Standards.JSON/Protocols.HTTP, constant declarations, mapping/array/object types, ([ ... ]) mappings, -> method calls, or Process.create_process.", _code_looks_like_pike(code_lower)),
         ("Ruby", 96, "Ruby/Sinatra syntax: require 'sinatra', route blocks with do/end, SQLite3::Database, or Net::HTTP.", _code_looks_like_ruby(code_lower)),
     ]
 
@@ -2429,19 +2479,30 @@ Code:
 """
 
 
-def _ai_language_detection_prompt(code: str) -> str:
+def _ai_language_detection_prompt(code: str, challenge_note: str | None = None) -> str:
     sample = _code_sample_for_language_detection(code)
+    challenge_section = (
+        f"""
+Important correction challenge:
+{challenge_note}
+Re-read the code and return the strongest programming language candidate, not a data format or embedded string language.
+"""
+        if challenge_note
+        else ""
+    )
     return f"""
 Detect the main programming language of this pasted code.
 Return only JSON.
 Do not review vulnerabilities in this step.
 If application code contains SQL strings, return the application language, not SQL.
 Return SQL only if the pasted code is primarily standalone SQL.
+Return JSON only if the pasted text is primarily raw JSON data. If it has imports, functions, types, semicolons, method calls, or shell/database calls, it is executable code, not JSON.
 Use this exact reasoning process before answering:
 1. Read the pasted code.
 2. Look for code-style fingerprints, such as @import("std") for Zig, Object subclass: for Smalltalk, import vibe.d for D, open Lwt for OCaml, and (defn ...) for Clojure.
 3. Compare all syntax clues together instead of trusting one weak clue.
 4. Pick the strongest language match and explain the strongest evidence briefly.
+{challenge_section}
 This is a short sample from the pasted code when the full input is large.
 
 Code:
@@ -2449,6 +2510,43 @@ Code:
 {sample}
 ```
 """
+
+
+def _language_detection_challenge_note(
+    detected_language: str,
+    code: str,
+    syntax_language: str | None,
+    syntax_confidence: int | None,
+    syntax_evidence: str | None,
+) -> str | None:
+    canonical_detected = _canonical_language_name(detected_language) or detected_language
+    code_lower = code.lower()
+    executable = _code_looks_executable_not_data(code_lower)
+
+    if canonical_detected in {"JSON", "SQL"} and executable:
+        return (
+            f"Your previous answer was {canonical_detected}, but this pasted text has executable code structure. "
+            "JSON/SQL may appear inside strings or map literals, but the answer must be the host programming language."
+        )
+
+    if syntax_language and canonical_detected != syntax_language and (syntax_confidence or 0) >= 85:
+        return (
+            f"Your previous answer was {canonical_detected}. Independent syntax evidence suggests {syntax_language}: "
+            f"{syntax_evidence or 'strong source-code fingerprints were present'}."
+        )
+
+    if (
+        canonical_detected in {"JavaScript", "TypeScript", "C", "C++", "Plain Text", "Text", "Unknown"}
+        and executable
+        and canonical_detected != syntax_language
+        and not _code_looks_like_node_js(code_lower)
+    ):
+        return (
+            f"Your previous answer was {canonical_detected}. Re-check whether this is a superficially similar language, "
+            "because braces, semicolons, imports, or arrow-style method calls alone are not enough."
+        )
+
+    return None
 
 
 def _ai_local_findings_prompt(payload: ReviewRequest, safety_review: ReviewResponse) -> str:
@@ -2805,7 +2903,7 @@ def _has_shell_command_injection(code_lower: str) -> bool:
     }
     has_shell_exec = bool(
         re.search(
-            r"(os\.execute|sys\.command|system\s*\(|execmd\s*\(|executeshell\s*\(|system\.cmd\s*\(|system\.cmd|system\.cmd\(|exec_cmd\s*\(|std\.process\.child\.run|subprocess\.|:\s*os\.cmd|\.execute\s*\(\s*\)|\bsh\s+\"sh\"\s+\"-c\")",
+            r"(os\.execute|sys\.command|system\s*\(|execmd\s*\(|executeshell\s*\(|system\.cmd\s*\(|system\.cmd|system\.cmd\(|exec_cmd\s*\(|std\.process\.child\.run|process\.create_process|subprocess\.|:\s*os\.cmd|\.execute\s*\(\s*\)|\bsh\s+\"sh\"\s+\"-c\")",
             code_lower,
         )
         or "osprocess command:" in code_lower
@@ -3647,7 +3745,7 @@ IDENTIFICATION DIVISION/PROCEDURE DIVISION is COBOL; program/implicit none/end p
 with Ada/procedure ... is/begin/end is Ada; program/uses/begin/end. is Pascal;
 module/endmodule/always/assign is Verilog; library ieee/entity/architecture/std_logic is VHDL;
 HTML tags identify HTML; CSS selectors/properties identify CSS; XML declaration/tags identify XML;
-JSON quoted keys identify JSON; [section] key=value can be TOML/INI depending separators.
+Raw JSON data has quoted keys/values with no executable imports, function/type declarations, semicolon-heavy statements, or method calls; [section] key=value can be TOML/INI depending separators.
 Also recognize Haxe, V, Odin, Chapel, Pony, Ballerina, Q#, Hack, ActionScript, CoffeeScript, PureScript, ReasonML, ReScript, Fennel, Janet, Hy, MoonScript, Wren, Move, Cadence, Cairo, Circom, GLSL, HLSL, CUDA, OpenCL, ShaderLab, AWK, sed, Markdown, Mermaid, PlantUML, LaTeX, reStructuredText, Dhall, Jsonnet, Starlark, CUE, Bicep, Thrift, Cap'n Proto, YARA, Zeek, SPARQL, and XQuery by syntax fingerprints.
 use strict/use warnings/my $var/sub name/Mojolicious::Lite/app->start is Perl;
 pragma solidity/contract/mapping/msg.sender is Solidity; resource/provider/variable blocks are Terraform/HCL;
@@ -3659,6 +3757,7 @@ Do not classify Perl or Mojolicious code as C++ just because it uses -> method s
 SQL keywords inside strings are a SQL injection risk, but they do not make the whole pasted code SQL.
 Do not classify Smalltalk code as SQL just because it builds SQL strings.
 Do not classify Lua/OpenResty code as SQL just because it builds SQL strings.
+Do not classify executable application code as JSON just because it contains quoted keys, colon separators, arrays, or map/dictionary literals.
 This is defensive code review for a portfolio app. The user is asking to find and fix vulnerabilities,
 not to exploit them. Do not provide executable attack steps.
 Risk score must match issue severity:
@@ -3741,7 +3840,8 @@ PHP syntax includes <?php, $variables, namespace/use, function declarations, ech
 PowerShell syntax includes param blocks, Verb-Noun cmdlets, $env:, Write-Host, and pipeline cmdlets.
 CMake syntax includes cmake_minimum_required, project(), add_executable(), target_link_libraries(), and set().
 Makefile syntax includes .PHONY, targets with dependencies, tab-indented commands, variables, and $(...) expansion.
-HTML/CSS/XML/JSON/TOML/INI have markup/config-specific syntax; do not classify them as JavaScript just because they contain braces or keys.
+HTML/CSS/XML/TOML/INI have markup/config-specific syntax; do not classify them as JavaScript just because they contain braces or keys.
+Return JSON only for raw JSON data. Do not return JSON for executable application code that has imports, functions, type declarations, semicolons, method calls, database calls, or shell/process calls.
 COBOL, Fortran, Pascal, Ada, Prolog, Lisp/Scheme/Racket, MATLAB, SAS, Verilog/SystemVerilog, VHDL, Assembly, GraphQL, Protocol Buffers, Vue, Svelte, QML, Nix, GDScript, ColdFusion, ABAP, Apex, Raku, Tcl, and Elm each have local fingerprint rules in the backend; use the closest syntax match.
 Also recognize Haxe, V, Odin, Chapel, Pony, Ballerina, Q#, Hack, ActionScript, CoffeeScript, PureScript, ReasonML, ReScript, Fennel, Janet, Hy, MoonScript, Wren, Move, Cadence, Cairo, Circom, GLSL, HLSL, CUDA, OpenCL, ShaderLab, AWK, sed, Markdown, Mermaid, PlantUML, LaTeX, reStructuredText, Dhall, Jsonnet, Starlark, CUE, Bicep, Thrift, Cap'n Proto, YARA, Zeek, SPARQL, and XQuery by syntax fingerprints.
 Solidity syntax includes pragma solidity, contract, mapping, address, msg.sender, and public/external functions.
@@ -3753,6 +3853,7 @@ Do not return JavaScript for Zig code just because it contains std.fs.cwd() or f
 Do not return C++ for Perl code just because Perl uses -> method calls.
 Do not return SQL for Smalltalk code just because it builds SQL strings.
 Do not return SQL for Lua/OpenResty code just because it builds SQL strings.
+Do not return JSON for map/dictionary literals inside real source code.
 Return SQL only for standalone SQL scripts or mostly raw SQL.
 Your JSON must match this structure:
 {
@@ -3788,11 +3889,11 @@ Your JSON must match this structure:
             options["max_tokens"] = max_tokens
         return options
 
-    async def run_ai_language_detection() -> tuple[str, int | None, str | None]:
+    async def run_ai_language_detection(challenge_note: str | None = None) -> tuple[str, int | None, str | None]:
         completion = await asyncio.to_thread(
             client.chat.completions.create,
             **completion_options_for(
-                _ai_language_detection_prompt(payload.code),
+                _ai_language_detection_prompt(payload.code, challenge_note),
                 language_detection_system_prompt,
                 max_tokens=_int_env("OPENAI_LANGUAGE_DETECTION_MAX_TOKENS", 120, 40, 300),
             ),
@@ -3805,7 +3906,8 @@ Your JSON must match this structure:
             raise ValueError("AI language detection did not return detected_language.")
         confidence = parsed.get("confidence")
         try:
-            confidence = int(float(confidence)) if confidence is not None else None
+            confidence_float = float(confidence) if confidence is not None else None
+            confidence = int(confidence_float * 100) if confidence_float is not None and confidence_float <= 1 else int(confidence_float) if confidence_float is not None else None
         except (TypeError, ValueError):
             confidence = None
         if confidence is not None:
@@ -3843,6 +3945,28 @@ Your JSON must match this structure:
                 ai_language_confidence,
                 ai_language_evidence,
             )
+            challenge_note = _language_detection_challenge_note(
+                ai_detected_language,
+                payload.code,
+                syntax_detected_language,
+                syntax_detected_confidence,
+                syntax_detected_evidence,
+            )
+            if challenge_note:
+                logger.info(
+                    "AI language detection challenged. detected_language=%s challenge=%s",
+                    ai_detected_language,
+                    challenge_note,
+                )
+                ai_detected_language, ai_language_confidence, ai_language_evidence = await run_ai_language_detection(
+                    challenge_note
+                )
+                logger.info(
+                    "AI language detection challenge completed. detected_language=%s confidence=%s evidence=%s",
+                    ai_detected_language,
+                    ai_language_confidence,
+                    ai_language_evidence,
+                )
         except Exception as detection_exc:
             ai_detected_language = _detected_review_language(payload.language, payload.code)
             ai_language_confidence = syntax_detected_confidence

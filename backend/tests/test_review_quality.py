@@ -384,6 +384,79 @@ pub fn main() !void {
     assert _detected_review_language("Auto", code) == "Zig"
 
 
+def test_pike_code_auto_detects_pike_not_json():
+    code = """import Stdio;
+import Sql;
+import Standards.JSON;
+import Protocols.HTTP;
+
+constant JWT_SECRET = "demo-jwt-secret";
+constant UPLOAD_DIR = "uploads";
+
+Sql.Sql db()
+{
+    return Sql.Sql("mysql://localhost/app");
+}
+
+mapping login(mapping body)
+{
+    string email = body["email"];
+    object conn = db();
+    string query = "SELECT id FROM users WHERE email = '" + email + "'";
+    array rows = conn->query(query);
+    mapping user = rows[0];
+
+    return ([
+        "message": "Login successful",
+        "token": JWT_SECRET + "-" + (string)user["id"]
+    ]);
+}
+"""
+
+    assert _detected_review_language("Auto", code) == "Pike"
+
+
+def test_pike_fallback_detects_security_risks():
+    review = _fallback_review(
+        ReviewRequest(
+            code="""import Stdio;
+import Sql;
+import Standards.JSON;
+import Protocols.HTTP;
+
+constant PAYMENT_SECRET = "demo-payment-secret";
+constant UPLOAD_DIR = "uploads";
+
+mapping pay_claim(mapping body)
+{
+    string email = body["email"];
+    string card_number = body["card_number"];
+    string filename = body["filename"];
+    string backup_name = body["backup_name"];
+
+    object conn = db();
+    string query = "SELECT id FROM users WHERE email = '" + email + "'";
+    conn->query(query);
+
+    string command = "mysqldump app > backups/" + backup_name;
+    Process.create_process(({ "/bin/sh", "-c", command }))->wait();
+
+    string file_path = UPLOAD_DIR + "/" + filename;
+    Stdio.File file = Stdio.File();
+    file->open(file_path, "wct");
+    file->write(card_number);
+}
+""",
+            focus="security, payments",
+        )
+    )
+
+    categories = {_bug_category(bug) for bug in review.bugs}
+    assert review.detected_language == "Pike"
+    assert {"hardcoded_secret", "sql_injection", "command_injection", "path_traversal", "raw_card"}.issubset(categories)
+    assert review.risk_score == 100
+
+
 def test_broad_language_fingerprints_detect_common_and_legacy_languages():
     cases = [
         (
@@ -1685,6 +1758,100 @@ let app =
     assert "AI language detection step result:\nOCaml" in calls["prompts"][1]
     assert review.detected_language == "OCaml"
     assert review.reviewed_language == "OCaml"
+
+
+def test_ai_language_detection_challenges_json_for_executable_code(monkeypatch):
+    calls = {"count": 0, "prompts": []}
+    first_language_content = json.dumps(
+        {
+            "detected_language": "JSON",
+            "confidence": 90,
+            "evidence": "Quoted keys and colon separators.",
+        }
+    )
+    second_language_content = json.dumps(
+        {
+            "detected_language": "Pike",
+            "confidence": 96,
+            "evidence": "import Stdio, mapping functions, ([ ... ]) mappings, and -> method calls.",
+        }
+    )
+    review_content = json.dumps(
+        {
+            "summary": "The Pike code has unsafe SQL construction.",
+            "detected_language": "Pike",
+            "reviewed_language": "Pike",
+            "risk_score": 100,
+            "bugs": [
+                {
+                    "title": "SQL injection",
+                    "severity": "Critical",
+                    "explanation": "The query concatenates user input.",
+                    "suggested_fix": "Use parameterized queries.",
+                }
+            ],
+            "improvements": ["Validate all external inputs."],
+            "test_cases": ["Test malicious SQL input is rejected."],
+            "fixed_code": None,
+        }
+    )
+
+    class FakeMessage:
+        def __init__(self, content: str):
+            self.content = content
+
+    class FakeChoice:
+        def __init__(self, content: str):
+            self.message = FakeMessage(content)
+
+    class FakeCompletion:
+        def __init__(self, content: str):
+            self.choices = [FakeChoice(content)]
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            calls["count"] += 1
+            calls["prompts"].append(kwargs["messages"][-1]["content"])
+            if calls["count"] == 1:
+                return FakeCompletion(first_language_content)
+            if calls["count"] == 2:
+                return FakeCompletion(second_language_content)
+            return FakeCompletion(review_content)
+
+    class FakeChat:
+        completions = FakeCompletions()
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.chat = FakeChat()
+
+    code = """import Stdio;
+import Sql;
+import Standards.JSON;
+
+constant JWT_SECRET = "demo-jwt-secret";
+
+mapping login(mapping body)
+{
+    string email = body["email"];
+    object conn = db();
+    string query = "SELECT id FROM users WHERE email = '" + email + "'";
+    array rows = conn->query(query);
+    return ([ "message": "Login successful", "id": rows[0]["id"] ]);
+}
+"""
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr("app.services.reviewer.OpenAI", FakeClient)
+    _clear_review_cache()
+
+    review = asyncio.run(review_code(ReviewRequest(code=code, focus="security")))
+
+    assert calls["count"] == 3
+    assert "Important correction challenge" in calls["prompts"][1]
+    assert "AI language detection step result:\nPike" in calls["prompts"][2]
+    assert review.detected_language == "Pike"
+    assert review.reviewed_language == "Pike"
 
 
 def test_safe_retry_prompt_redacts_dangerous_literals():
