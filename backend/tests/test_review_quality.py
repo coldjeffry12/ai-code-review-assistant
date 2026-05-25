@@ -457,6 +457,141 @@ mapping pay_claim(mapping body)
     assert review.risk_score == 100
 
 
+def test_janet_code_auto_detects_janet_not_clojure():
+    code = """(import json)
+(import os)
+(import sqlite3)
+(import net/http)
+
+(def DB_PATH "hospital_fund.db")
+(def ADMIN_TOKEN "demo-admin-token")
+(def PAYMENT_SECRET "demo-payment-secret")
+
+(defn db-connect []
+  (sqlite3/open DB_PATH))
+
+(defn login [body]
+  (let [email (body "email")
+        password (body "password")
+        sql (string
+              "SELECT id, email, role FROM users WHERE email = '"
+              email
+              "' AND password = '"
+              password
+              "'")
+        user (query-one sql)]
+    @{
+      "message" "Login successful"
+      "user_id" (user "id")
+    }))
+
+(defn upload-medical-file [body]
+  (let [filename (body "filename")
+        file-path (string "uploads/" filename)]
+    (spit file-path "content")))
+
+(defn import-config [body]
+  (let [config-path (body "config_path")
+        content (slurp config-path)]
+    (eval-string content)))
+"""
+
+    assert _detected_review_language("Auto", code) == "Janet"
+
+
+def test_ai_language_detection_challenges_clojure_for_janet_code(monkeypatch):
+    calls = {"count": 0, "prompts": []}
+    first_language_content = json.dumps(
+        {
+            "detected_language": "Clojure",
+            "confidence": 98,
+            "evidence": "The code uses defn forms.",
+        }
+    )
+    second_language_content = json.dumps(
+        {
+            "detected_language": "Janet",
+            "confidence": 98,
+            "evidence": "The code uses (import ...), @{ } tables, spit, slurp, and eval-string.",
+        }
+    )
+    review_content = json.dumps(
+        {
+            "summary": "The Janet code has unsafe SQL construction.",
+            "detected_language": "Janet",
+            "reviewed_language": "Janet",
+            "risk_score": 100,
+            "bugs": [
+                {
+                    "title": "SQL injection",
+                    "severity": "Critical",
+                    "explanation": "The query concatenates user input.",
+                    "suggested_fix": "Use parameterized queries.",
+                }
+            ],
+            "improvements": ["Validate all external inputs."],
+            "test_cases": ["Test malicious SQL input is rejected."],
+            "fixed_code": None,
+        }
+    )
+
+    class FakeMessage:
+        def __init__(self, content: str):
+            self.content = content
+
+    class FakeChoice:
+        def __init__(self, content: str):
+            self.message = FakeMessage(content)
+
+    class FakeCompletion:
+        def __init__(self, content: str):
+            self.choices = [FakeChoice(content)]
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            calls["count"] += 1
+            calls["prompts"].append(kwargs["messages"][-1]["content"])
+            if calls["count"] == 1:
+                return FakeCompletion(first_language_content)
+            if calls["count"] == 2:
+                return FakeCompletion(second_language_content)
+            return FakeCompletion(review_content)
+
+    class FakeChat:
+        completions = FakeCompletions()
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.chat = FakeChat()
+
+    code = """(import json)
+(import os)
+
+(def PAYMENT_SECRET "demo-payment-secret")
+
+(defn login [body]
+  (let [email (body "email")
+        sql (string "SELECT id FROM users WHERE email = '" email "'")]
+    @{"message" "Login successful" "email" email}))
+
+(defn import-config [body]
+  (let [content (slurp (body "config_path"))]
+    (eval-string content)))
+"""
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr("app.services.reviewer.OpenAI", FakeClient)
+    _clear_review_cache()
+
+    review = asyncio.run(review_code(ReviewRequest(code=code, focus="security")))
+
+    assert calls["count"] == 3
+    assert "Independent syntax evidence suggests Janet" in calls["prompts"][1]
+    assert "AI language detection step result:\nJanet" in calls["prompts"][2]
+    assert review.detected_language == "Janet"
+    assert review.reviewed_language == "Janet"
+
+
 def test_broad_language_fingerprints_detect_common_and_legacy_languages():
     cases = [
         (

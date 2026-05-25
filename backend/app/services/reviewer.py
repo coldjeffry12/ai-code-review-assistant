@@ -16,6 +16,7 @@ from app.schemas import ReviewRequest, ReviewResponse, BugFinding
 logger = logging.getLogger(__name__)
 
 _REVIEW_CACHE: dict[str, dict[str, Any]] = {}
+_REVIEW_CACHE_VERSION = "language-detection-v4"
 
 _GENERIC_TEST_CASES = {
     "test normal valid input.",
@@ -416,13 +417,17 @@ _LANGUAGE_SIGNATURES: list[dict[str, Any]] = [
     {
         "language": "Janet",
         "confidence": 88,
-        "evidence": "Janet syntax: defn/def forms, fn with [] parameters, import/use forms, and Janet keywords.",
+        "evidence": "Janet syntax: defn/def forms with [] parameters, (import ...), @{ } tables, @[] tuples/arrays, each loops, spit/slurp, or eval-string.",
         "threshold": 6,
         "patterns": [
             (r"\(defn\s+\w+\s+\[[^\]]*\]", 5),
             (r"\(def\s+\w+\s+", 3),
             (r"\(fn\s+\[[^\]]*\]", 4),
             (r"\(import\s+\w+", 3),
+            (r"@\{", 4),
+            (r"@\[[^\]]*\]", 3),
+            (r"\(each\s+\w+", 3),
+            (r"\b(eval-string|spit|slurp)\b", 3),
             (r"\(printf?\s+", 2),
         ],
     },
@@ -1879,10 +1884,38 @@ def _code_looks_like_nim(code_lower: str) -> bool:
     )
 
 
+def _code_looks_like_janet(code_lower: str) -> bool:
+    return bool(
+        (
+            re.search(r"^\s*\(defn\s+[\w!?\-]+\s+\[[^\]]*\]", code_lower, re.MULTILINE)
+            and (
+                re.search(r"^\s*\(import\s+[\w/\.-]+\)", code_lower, re.MULTILINE)
+                or "@{" in code_lower
+                or "@[" in code_lower
+                or "(each " in code_lower
+                or "eval-string" in code_lower
+                or re.search(r"\b(spit|slurp)\b", code_lower)
+            )
+        )
+        or re.search(r"^\s*\(def\s+\w+\s+\"[^\"]*\"\)", code_lower, re.MULTILINE)
+    )
+
+
 def _code_looks_like_clojure(code_lower: str) -> bool:
+    if _code_looks_like_janet(code_lower):
+        return False
     return bool(
         re.search(r"^\s*\(ns\s+[\w.-]+", code_lower, re.MULTILINE)
-        or re.search(r"^\s*\(defn\s+[\w!?\-]+", code_lower, re.MULTILINE)
+        or (
+            re.search(r"^\s*\(defn\s+[\w!?\-]+", code_lower, re.MULTILINE)
+            and (
+                re.search(r":require\s+\[", code_lower)
+                or "clojure." in code_lower
+                or "ring.adapter" in code_lower
+                or "compojure." in code_lower
+                or "jdbc/" in code_lower
+            )
+        )
         or re.search(r"^\s*\(defroutes\s+\w+", code_lower, re.MULTILINE)
         or re.search(r":require\s+\[", code_lower)
         or "clojure.java.jdbc" in code_lower
@@ -2081,6 +2114,7 @@ def _syntax_language_detection(code: str) -> tuple[str | None, int | None, str |
         ("Perl", 98, "Perl/Mojolicious syntax: use strict, my $variable, sub, DBI->connect, $c->render, or app->start.", _code_looks_like_perl(code_lower)),
         ("Elixir", 98, "Elixir syntax: defmodule, @module attributes, Postgrex, Jason, or DateTime.utc_now().", _code_looks_like_elixir(code_lower)),
         ("Nim", 98, "Nim/Jester syntax: import jester, proc declarations, routes:, when isMainModule, or runForever().", _code_looks_like_nim(code_lower)),
+        ("Janet", 98, "Janet syntax: (import ...), (defn ... []), @{ } tables, @[] arrays, string calls, each loops, spit/slurp, or eval-string.", _code_looks_like_janet(code_lower)),
         ("Clojure", 98, "Clojure/Ring syntax: (ns ...), (defn ...), defroutes, :require vectors, clojure.java.jdbc, or run-jetty.", _code_looks_like_clojure(code_lower)),
         ("Lua", 98, 'Lua/OpenResty syntax: local function/local variables, require "resty.http"/"cjson"/"lsqlite3", ngx.req, ngx.var, or cjson.encode.', _code_looks_like_lua(code_lower)),
         ("OCaml", 98, "OCaml/Opium syntax: open Lwt/Opium, let bindings, |> pipelines, >>= Lwt binds, variant matches, or App.post/App.get routes.", _code_looks_like_ocaml(code_lower)),
@@ -2217,6 +2251,7 @@ def _cache_key(payload: ReviewRequest) -> str:
         [
             payload.language.strip().lower(),
             payload.focus.strip().lower(),
+            _REVIEW_CACHE_VERSION,
             hashlib.sha256(payload.code.encode("utf-8")).hexdigest(),
         ]
     )
@@ -2338,6 +2373,8 @@ def _find_similar_cached_review(payload: ReviewRequest) -> dict[str, Any] | None
     focus = payload.focus.strip().lower()
 
     for entry in _REVIEW_CACHE.values():
+        if entry.get("cache_version") != _REVIEW_CACHE_VERSION:
+            continue
         if entry["language"] != language or entry["focus"] != focus:
             continue
         previous_code = _normalize_code_for_similarity(entry["code"])
@@ -2402,6 +2439,7 @@ def _store_review(payload: ReviewRequest, response: ReviewResponse) -> None:
         "code": payload.code,
         "response": review_to_store,
         "created_at": time.time(),
+        "cache_version": _REVIEW_CACHE_VERSION,
     }
 
     while len(_REVIEW_CACHE) > _cache_limit():
@@ -3729,6 +3767,7 @@ Use syntax evidence for language detection: defmodule/do/end/Postgrex/Jason is E
 require "sinatra" with do/end is Ruby; require "kemal"/do |env|/.as_s/Kemal.run is Crystal;
 import jester/proc/routes/when isMainModule is Nim;
 ns/defn/defroutes/:require/clojure.java.jdbc/ring.adapter.jetty/compojure.core is Clojure;
+Janet uses (import ...), (defn ... []), @{ } table literals, @[] arrays/tuples, (string ...), each loops, spit/slurp, and eval-string; do not call Janet Clojure just because both use defn.
 local function/local variables/require "resty.http"/require "cjson"/ngx.req/ngx.var/lsqlite3 is Lua/OpenResty;
 open Lwt/open Opium/let bindings/|> pipelines/>>= fun/App.post/App.get is OCaml/Opium;
 import groovy.*/groovy.sql.Sql/def variables/GString ${...}/command.execute()/GroovyShell is Groovy;
@@ -3822,6 +3861,7 @@ Use syntax evidence, not vulnerability type.
 SQL keywords embedded inside application strings are not enough to classify the whole code as SQL.
 Perl/Mojolicious syntax includes use strict, use warnings, my $variable, sub name, DBI->connect, $c->render, and app->start.
 Clojure/Ring/Compojure syntax includes (ns ...), (defn ...), (defroutes ...), :require vectors, clojure.java.jdbc, jdbc/query, and run-jetty.
+Janet syntax includes (import ...), (defn name [args]), @{ } table literals, @[] arrays/tuples, (string ...), each loops, spit/slurp, and eval-string. Do not return Clojure for Janet just because both use defn.
 Lua/OpenResty syntax includes local function, local variables, require "cjson", require "lsqlite3", require "resty.http", ngx.req, ngx.var, ngx.say, cjson.decode, and cjson.encode.
 OCaml/Opium syntax includes open Lwt, open Opium, let bindings, |> pipelines, >>= fun binds, `Assoc variants, and App.post/App.get routes.
 Groovy syntax includes import groovy.*, groovy.sql.Sql, def variables, static methods, GString ${...}, command.execute(), and GroovyShell.
